@@ -18,7 +18,8 @@ address a Remote job workspace for notebook writes (record HPC data as external 
    report opens with a three-sentence summary (what / why / expected) and a fact table built from
    these fields plus the recorded runs. Also pass `purpose` (why this follows from earlier work),
    `implementer` (`{kind: "user"|"agent", name, model}`) and `environment_location` (the uv/conda
-   environment path actually used) — a vague objective shows up as a vague report.
+   environment path actually used). For a campaign of several records pass
+   `derived_from: [parent_experiment_id]`; an undeclared cross-record artifact reference is warned about.
 2. Keep the returned `experiment_id`. Repeated task identity resumes the same record only when
    `title` and `objective` match byte-exactly; otherwise the tool rejects the call rather than
    silently creating a duplicate. Recover the exact stored strings with `research_record_index`
@@ -51,7 +52,8 @@ address a Remote job workspace for notebook writes (record HPC data as external 
   effective seeds, software versions, inputs, outputs and failure information.
   Submit work with existing Levin/compute tools; this plugin has no scheduler.
 - Register artifacts and runs before referencing their returned IDs in a checkpoint; a guessed ID is
-  rejected, and correcting a checkpoint means appending a new one, never editing the old text.
+  rejected. Never edit old text: correct a `conclusion`, `observation` or `method` by appending a new
+  checkpoint with `supersedes: <checkpoint_id>`; the original stays visible, struck through.
 - Batch a meaningful observation into one checkpoint. Use a stable `request_id` on retries;
   changed payloads require new request IDs. Update a run with its returned `run_id` as `run.id`.
 - Remote raw data stays remote. Compute on the remote machine and bring back only lightweight
@@ -67,17 +69,12 @@ address a Remote job workspace for notebook writes (record HPC data as external 
   requires dataset `input_ids`, `script_id` and `run_id`; register the run before its figures,
   then update its `output_ids`. Preserve units, replicates and conditions in artifact metadata.
 - Re-registering a location whose checksum was never recorded refreshes that entry in place, including
-  raw entries; a raw location whose recorded checksum no longer matches is rejected and keeps its
-  original record. After any post-finalization change, `validate` warns that the delivered report is
-  stale — re-finalize when the report must reflect it.
+  raw entries; a raw location whose checksum no longer matches is rejected. After any post-finalization
+  change `validate` warns the report is stale — re-finalize when it must reflect the change.
 - In `register_run`, passing `run.id` means update; omit it to create. Run objects accept only the
-  declared fields, so link scripts through artifacts, not the run. Copy an analysis script into the
-  experiment folder and run that copy before registering, or the recorded checksum will not match
-  the code that produced the outputs.
-- A blocked `finalize` keeps `execution_status` unchanged and records `render_state` `blocked` with
-  `requested_execution_status`; only a passing final gate commits `success` or `failed`. A blocked or
-  render-failed attempt does not consume its `request_id`, so retry the same call after clearing the
-  gate; only a successful finalization is memoized and replayed.
+  declared fields, so link scripts through artifacts, not the run.
+- A blocked `finalize` keeps `execution_status` unchanged and records `render_state` `blocked`; only a
+  passing gate commits `success` or `failed`, and only a successful finalization is memoized.
 - `research_record_register_artifact` returns `warnings` when no checksum exists (absent file or the
   64 MiB budget). Treat them as unverified evidence, never as integrity proof.
 
@@ -145,10 +142,11 @@ Failure text must state what went wrong: `无结果` / `failed` / `error` shorth
 6. Artifacts open on a new page after a divider, with digests and paths in code blocks and data in
    tables. Read `space_usage` from the finalize result (or `record.md` → *Space usage*): it reports
    `levin_notebook` and `levin_scratch` bytes/files and the change since `research_record_init`.
-   Report those numbers; state that scratch is retained, never auto-deleted.
-7. Return concise evidence paths and remaining limitations. Finalization creates new immutable
-   report folders with editable Markdown/QMD and a fixed-layout PDF; failed rendering retains sources.
-   A successful execution can have an inconclusive or negative scientific interpretation.
+   Report those numbers; state that scratch is retained, never auto-deleted. Each finalize copies a
+   full PDF, so after repeated finalizes call `research_record_prune_reports` (add `dry_run: true`
+   first) to drop older snapshots — revisions and artifacts are never touched.
+7. Return concise evidence paths and remaining limitations. A successful execution can still have an
+   inconclusive or negative scientific interpretation.
 
 ## Boundaries and recovery
 

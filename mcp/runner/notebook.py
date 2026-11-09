@@ -1,6 +1,6 @@
 """Portable filesystem notebook. No Levin imports, network, scheduler or data deletion."""
 from __future__ import annotations
-import copy, hashlib, json, os, re, socket, uuid
+import copy, hashlib, json, os, re, shutil, socket, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -13,7 +13,10 @@ MAX_RECORD = 2_000_000
 # unconventional; these are surfaced before the conclusion, not buried in a table.
 BLOCKING_UNIT_CODES = ('dimension_mismatch','unparsable_unit','missing_unit',
                        'non_numeric','non_finite','negative_uncertainty',
-                       'uncertainty_unit_mismatch','inconsistent_unit')
+                       'uncertainty_unit_mismatch','inconsistent_unit',
+                       # A wrong-but-legal unit rescales the number silently: 2.26 nm
+                       # reads as 22.6 Å. Opt out per quantity with unit_acknowledged.
+                       'unit_scale','unknown_quantity','unparsable_dimension')
 HASH_BUDGET = 64 * 1024 * 1024
 LARGE_COPY_BYTES = 64 * 1024 * 1024
 LIGHT_OUTPUT_BYTES = 64 * 1024 * 1024
@@ -114,9 +117,11 @@ SCHEMA = {
  'references':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['id','citation'],'properties':{'id':{'type':'string','minLength':1,'maxLength':60},'citation':{'type':'string','minLength':1},'year':{'type':['integer','null']},'venue':{'type':'string'},'design':{'type':'string'},'sample':{'type':'string'},'key_findings':{'type':'string'},'evidence_level':{'type':'string'},'relevance':{'type':'string'},'read_full_text':{'type':['boolean','null']},'doi':{'type':'string'},'authors':{'type':'array','items':{'type':'string'}},'title':{'type':'string'},'entry_type':{'type':'string'},'section':{'type':'string'},'metadata_issues':{'type':'array','items':{'type':'string'}},'source':{'type':'string'}}}},
  'synthesis':{'type':'string'},
  'font_profile':{'type':'string','maxLength':60},
+ 'derived_from':{'type':'array','maxItems':50,'items':{'type':'string','pattern':'^exp-[0-9a-f]{32}$'}},
+
  'citations':{'type':'array','maxItems':2000,'items':{'type':'object','additionalProperties':False,'required':['from','to'],'properties':{'from':{'type':'string'},'to':{'type':'string'},'relation':{'type':'string'}}}},
  'reference_sections':{'type':'array','maxItems':50,'items':{'type':'object','additionalProperties':False,'required':['title'],'properties':{'title':{'type':'string','minLength':1,'maxLength':200},'text':{'type':'string','maxLength':20000}}}},
- 'quantities':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['name','value'],'properties':{'name':{'type':'string','minLength':1,'maxLength':120},'value':{'type':'number'},'unit':{'type':'string','maxLength':60},'uncertainty':{'type':['number','null']},'uncertainty_unit':{'type':'string','maxLength':60},'note':{'type':'string','maxLength':1000},'artifact_id':{'type':'string','maxLength':120}}}},
+ 'quantities':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['name','value'],'properties':{'name':{'type':'string','minLength':1,'maxLength':120},'value':{'type':'number'},'unit':{'type':'string','maxLength':60},'dimension':{'type':'string','maxLength':60},'unit_acknowledged':{'type':'boolean'},'uncertainty':{'type':['number','null']},'uncertainty_unit':{'type':'string','maxLength':60},'note':{'type':'string','maxLength':1000},'artifact_id':{'type':'string','maxLength':120},'replica':{'type':['integer','null'],'minimum':1}}}},
 
  'extra_sections':{'type':'array','maxItems':30,'items':{'type':'object','additionalProperties':False,'required':['title','text'],'properties':{'title':{'type':'string','minLength':1,'maxLength':200},'text':{'type':'string','minLength':1}}}},
  'implementer':{'type':['object','null'],'additionalProperties':False,'properties':{'kind':{'enum':['user','agent']},'name':{'type':'string'},'model':{'type':'string'}}},
@@ -202,11 +207,18 @@ class Notebook:
         d = self._dir(m['experiment_id'])
         return {'ok':True,'experiment_id':m['experiment_id'],'revision':m['revision'],'execution_status':m['execution_status'],'manifest_path':str(d/'manifest.json'),'record_path':str(d/'record.md')}
 
-    def init(self, task_id, agent_id, title, objective, hypothesis='', experiment_id=None, retention='retain until explicit user-approved policy', expected_result='', purpose='', implementer=None, environment_location='', record_type='experiment'):
+    def init(self, task_id, agent_id, title, objective, hypothesis='', experiment_id=None, retention='retain until explicit user-approved policy', expected_result='', purpose='', implementer=None, environment_location='', record_type='experiment', derived_from=()):
         safe_name(task_id,'task_id'); safe_name(agent_id,'agent_id'); text(title,'title',limit=300); text(objective,'objective'); text(hypothesis,'hypothesis',False); text(expected_result,'expected_result',False); text(purpose,'purpose',False); text(environment_location,'environment_location',False,limit=4096)
         if record_type not in ('experiment','analysis','literature_review'): raise NotebookError('record_type must be experiment, analysis or literature_review')
+        parents=[]
+        for parent in derived_from or ():
+            if not isinstance(parent,str) or not re.fullmatch(r'exp-[0-9a-f]{32}',parent):
+                raise NotebookError(f'derived_from accepts experiment ids (exp-<32 hex>), got {parent!r}')
+            if parent not in parents: parents.append(parent)
         if implementer is not None:
-            if not isinstance(implementer,dict) or set(implementer)-{'kind','name','model'}: raise NotebookError('implementer accepts only kind, name and model')
+            if not isinstance(implementer,dict) or set(implementer)-{'kind','name','model'}:
+                raise NotebookError(f'implementer must be an object with kind/name/model, got {type(implementer).__name__}; '
+                                    'pass {"kind": "agent", "name": ...} rather than a JSON string')
             if implementer.get('kind') not in ('user','agent'): raise NotebookError('implementer.kind must be user or agent')
             for key in ('name','model'):
                 if key in implementer: text(implementer[key],'implementer.'+key,limit=200)
@@ -225,15 +237,26 @@ class Notebook:
             if eid:
                 m=self._load(eid)
                 if m['task_id'] != task_id or m['objective'] != objective or m['title'] != title: raise NotebookError('Resume identity conflicts with recorded task; use a new task_id')
+                patched = False
                 if expected_result and not m.get('expected_result'):
-                    m['expected_result']=expected_result; m['revision']+=1; m['updated_at']=now(); self._save(m)
+                    m['expected_result']=expected_result; patched=True
+                # Backfill only when nothing was recorded: the point is to repair a
+                # missing attribute, never to rewrite who did the work.
+                if implementer and not m.get('implementer'):
+                    m['implementer']=dict(implementer); patched=True
+                if environment_location and not m.get('environment_location'):
+                    m['environment_location']=environment_location; patched=True
+                if parents and not m.get('derived_from'):
+                    m['derived_from']=list(parents); patched=True
+                if patched:
+                    m['revision']+=1; m['updated_at']=now(); self._save(m)
                 changed=agent_id not in m['agents']
                 if changed:
                     m['agents'].append(agent_id); m['revision']+=1; m['updated_at']=now(); self._save(m)
                 resumed=True
             else:
                 eid=uid('exp'); t=now()
-                m=dict(schema_version=1,experiment_id=eid,task_id=task_id,created_at=t,updated_at=t,revision=1,title=title,objective=objective,hypothesis=hypothesis,execution_status='wip',interpretation='',limitations='',agents=[agent_id],checkpoints=[],artifacts=[],runs=[],visualization=None,reports=[],requests={},retention=retention,usage_at_init=baseline,expected_result=expected_result,lessons=[],plans=[],workspace_dir=str(self.workspace),purpose=purpose,implementer=implementer,environment_location=environment_location,strategy=[],method_plan=[],materials={},results={},footnotes=[],remote_space=[],record_type=record_type,search_strategy=None,references=[],synthesis='',citations=[],extra_sections=[],reference_sections=[],quantities=[])
+                m=dict(schema_version=1,experiment_id=eid,task_id=task_id,created_at=t,updated_at=t,revision=1,title=title,objective=objective,hypothesis=hypothesis,execution_status='wip',interpretation='',limitations='',agents=[agent_id],checkpoints=[],artifacts=[],runs=[],visualization=None,reports=[],requests={},retention=retention,usage_at_init=baseline,expected_result=expected_result,lessons=[],plans=[],workspace_dir=str(self.workspace),purpose=purpose,implementer=implementer,environment_location=environment_location,strategy=[],method_plan=[],materials={},results={},footnotes=[],remote_space=[],record_type=record_type,search_strategy=None,references=[],synthesis='',citations=[],extra_sections=[],reference_sections=[],quantities=[],derived_from=list(parents))
                 self._dir(eid).mkdir(parents=True,exist_ok=False)
                 for n in ('scripts','figures','data','reports','revisions'): (self._dir(eid)/n).mkdir()
                 self._atomic(self._dir(eid)/'notes.md','# Human notes\n\nEditable notes; record.md is a generated view. Capture scientific claims with checkpoint evidence IDs.\n')
@@ -275,7 +298,8 @@ class Notebook:
             if supersedes:
                 earlier=[c for c in m['checkpoints'] if c['id']==supersedes]
                 if not earlier: raise NotebookError('supersedes must reference an existing checkpoint id')
-                if earlier[0]['kind']!='conclusion': raise NotebookError('only an earlier conclusion can be superseded')
+                if earlier[0]['kind'] not in ('conclusion','observation','method'):
+                    raise NotebookError('only an earlier conclusion, observation or method can be superseded')
             if execution_status: m['execution_status']=execution_status
             c=dict(id=uid('checkpoint'),created_at=now(),agent_id=agent_id,kind=kind,text=body,evidence_ids=list(evidence_ids),title=title,replica=replica,retry=retry,when_note=when_note,refers_to=refers_to,supersedes=supersedes)
             m['checkpoints'].append(c)
@@ -467,6 +491,20 @@ class Notebook:
             delivered=[r for r in m['reports'] if r.get('render_state')=='success']
             if delivered and m['revision']>max(r.get('source_revision',0) for r in delivered):
                 result['warnings'].append(f'Delivered report is stale: it snapshots revision {max(r.get("source_revision",0) for r in delivered)} but the manifest is at revision {m["revision"]}; re-finalize with a new request_id')
+            # A cross-record artifact reference is allowed, but the hierarchy has to be
+            # declared or a reader cannot tell whose data this is.
+            declared=set(m.get('derived_from') or [])
+            foreign=set()
+            for a in m['artifacts']:
+                location=str(a.get('location') or '')
+                match=re.search(r'levin_notebook/experiments/(exp-[0-9a-f]{32})/', location)
+                if match and match.group(1)!=m['experiment_id']:
+                    foreign.add(match.group(1))
+            for other in sorted(foreign-declared):
+                result['warnings'].append(f'references artifacts of {other} without listing it in derived_from')
+            for parent in sorted(declared):
+                if not (self.root/'experiments'/parent/'manifest.json').is_file():
+                    result['warnings'].append(f'derived_from names {parent} but no such record exists in this workspace')
             for a in m['artifacts']:
                 if a['external'] and '://' not in a['location']:
                     result['warnings'].append(f'{a["id"]}: path {a["location"]} is outside workspace_dir; this record is not portable to another machine')
@@ -476,7 +514,27 @@ class Notebook:
             return {'ok':True,'experiment_id':eid,**result}
         except Exception as e: return {'ok':True,'experiment_id':eid,'valid':False,'errors':[str(e)],'warnings':[]}
 
-    def finalize(self,eid,execution_status,interpretation,limitations,visualization,request_id=None,lessons=(),plans=(),strategy=(),method_plan=(),materials=None,results=None,footnotes=(),remote_space=(),purpose='',environment_location='',search_strategy=None,references=(),synthesis='',citations=(),extra_sections=(),record_type=None,bibtex=None,bibtex_path=None,reference_sections=(),quantities=(),font_profile=None):
+    def finalize(self,eid,execution_status,interpretation,limitations,visualization,request_id=None,lessons=None,plans=None,strategy=None,method_plan=None,materials=None,results=None,footnotes=None,remote_space=None,purpose='',environment_location='',search_strategy=None,references=None,synthesis='',citations=None,extra_sections=None,record_type=None,bibtex=None,bibtex_path=None,reference_sections=None,quantities=None,font_profile=None):
+        # None means the caller omitted the field (keep what is stored); an explicit empty
+        # list is a real request to clear it. Without this distinction a finalize that only
+        # adds artifacts silently wiped lessons/plans/results in a real campaign.
+        provided={name:(value is not None) for name,value in
+                  (('lessons',lessons),('plans',plans),('strategy',strategy),('method_plan',method_plan),
+                   ('materials',materials),('results',results),('footnotes',footnotes),
+                   ('remote_space',remote_space),('references',references),('citations',citations),
+                   ('extra_sections',extra_sections),('reference_sections',reference_sections),
+                   ('quantities',quantities))}
+        lessons=() if lessons is None else lessons
+        plans=() if plans is None else plans
+        strategy=() if strategy is None else strategy
+        method_plan=() if method_plan is None else method_plan
+        footnotes=() if footnotes is None else footnotes
+        remote_space=() if remote_space is None else remote_space
+        references=() if references is None else references
+        citations=() if citations is None else citations
+        extra_sections=() if extra_sections is None else extra_sections
+        reference_sections=() if reference_sections is None else reference_sections
+        quantities=() if quantities is None else quantities
         text(interpretation,'interpretation'); text(limitations,'limitations')
         for item in list(lessons)+list(plans): text(item,'lessons/plans entry')
         for entry in strategy:
@@ -526,9 +584,13 @@ class Notebook:
         for entry in quantities:
             if not isinstance(entry,dict):
                 raise NotebookError('each quantity must be an object with name and value')
-            unknown=set(entry)-{'name','value','unit','uncertainty','uncertainty_unit','note','artifact_id'}
-            if unknown: raise NotebookError(f"quantity accepts name, value, unit, uncertainty, uncertainty_unit, note, artifact_id; got {sorted(unknown)}")
-            qty.append({k:entry[k] for k in ('name','value','unit','uncertainty','uncertainty_unit','note','artifact_id') if k in entry})
+            allowed={'name','value','unit','dimension','unit_acknowledged','uncertainty',
+                     'uncertainty_unit','note','artifact_id','replica'}
+            unknown=set(entry)-allowed
+            if unknown: raise NotebookError(f"quantity accepts {', '.join(sorted(allowed))}; got {sorted(unknown)}")
+            qty.append({k:entry[k] for k in ('name','value','unit','dimension','unit_acknowledged',
+                                             'uncertainty','uncertainty_unit','note','artifact_id','replica')
+                        if k in entry})
         note_text=str(synthesis) if synthesis else ''
         if note_text: text(note_text,'synthesis')
         if search_strategy is not None and not isinstance(search_strategy,dict): raise NotebookError('search_strategy must be an object')
@@ -538,9 +600,17 @@ class Notebook:
                      citations=list(citations),extra_sections=list(extra_sections),record_type=record_type,
                      reference_sections=ref_sections,quantities=qty,font_profile=font_profile)
         def change(m):
-            m.update(interpretation=interpretation,limitations=limitations,visualization=visualization,
-                     lessons=list(lessons),plans=list(plans),strategy=list(strategy),method_plan=list(method_plan),
-                     materials=dict(materials or {}),results=dict(results or {}),footnotes=notes,remote_space=remote)
+            # Scalar fields are always replaced (they are required or additive); list- and
+            # dict-valued fields only when the caller actually passed them.
+            m.update(interpretation=interpretation,limitations=limitations,visualization=visualization)
+            if provided['lessons']: m['lessons']=list(lessons)
+            if provided['plans']: m['plans']=list(plans)
+            if provided['strategy']: m['strategy']=list(strategy)
+            if provided['method_plan']: m['method_plan']=list(method_plan)
+            if provided['materials']: m['materials']=dict(materials or {})
+            if provided['results']: m['results']=dict(results or {})
+            if provided['footnotes']: m['footnotes']=notes
+            if provided['remote_space']: m['remote_space']=remote
             if purpose: m['purpose']=purpose
             if environment_location: m['environment_location']=environment_location
             if record_type:
@@ -549,12 +619,12 @@ class Notebook:
             m['search_strategy']=dict(search_strategy or {}) if search_strategy is not None else m.get('search_strategy')
             m['bibtex_source']=bib_source if bib_source else m.get('bibtex_source')
             m['bibtex_warnings']=bib_warnings if bib_warnings else m.get('bibtex_warnings',[])
-            m['references']=list(references) if references else m.get('references',[])
-            m['citations']=list(citations) if citations else m.get('citations',[])
-            m['reference_sections']=ref_sections if ref_sections else m.get('reference_sections',[])
-            m['quantities']=qty if qty else m.get('quantities',[])
+            if provided['references']: m['references']=list(references)
+            if provided['citations']: m['citations']=list(citations)
+            if provided['reference_sections']: m['reference_sections']=ref_sections
+            if provided['quantities']: m['quantities']=qty
             if font_profile: m['font_profile']=font_profile
-            m['extra_sections']=list(extra_sections) if extra_sections else m.get('extra_sections',[])
+            if provided['extra_sections']: m['extra_sections']=list(extra_sections)
             if note_text: m['synthesis']=note_text
             current={'notebook':usage(self.root),'scratch':usage(self.scratch)}
             m['usage_at_finalize']={'captured_at':now(),'notebook':current['notebook'],'scratch':current['scratch'],
@@ -609,6 +679,46 @@ class Notebook:
             }
             return {'finalized':record['render_state']=='success','validation':validation,'report':record,'space_usage':usage_result}
         return self.mutate(eid,request_id,payload,change,memoize=lambda result: bool(result.get('finalized')))
+
+    def prune_reports(self, eid, keep='last-success', dry_run=False):
+        """Delete old PDF snapshot folders; never touches revisions or artifacts.
+
+        Guards: the newest successful report is always kept, a folder is removed only
+        when the manifest records it, and `dry_run` reports what would go.
+        """
+        if keep not in ('last-success', 'all-success'):
+            raise NotebookError("keep must be 'last-success' or 'all-success'")
+        m=self._load(eid)
+        reports=list(m.get('reports') or [])
+        success=[r for r in reports if r.get('render_state')=='success']
+        # Always keep at least one snapshot. Without this guard a record whose every
+        # finalize was blocked would be emptied and then fail validation for missing
+        # reports — deleting the evidence that the attempts happened.
+        if keep=='last-success':
+            keep_ids={ (success[-1] if success else (reports[-1] if reports else None))['id'] } if reports else set()
+        else:
+            keep_ids={r['id'] for r in (success or reports[-1:])}
+        removable=[]
+        for record in reports:
+            name=str(record.get('source_path') or record.get('pdf_path') or '')
+            match=re.search(r'reports/(report-[0-9a-f]{32})/', name)
+            if not match: continue
+            folder=match.group(1)
+            if record['id'] in keep_ids: continue
+            target=self._dir(eid)/'reports'/folder
+            if not target.is_dir(): continue
+            removable.append((record['id'], folder, usage(target)['bytes']))
+        total=sum(bytes_ for _,_,bytes_ in removable)
+        if not dry_run:
+            for report_id, folder, _bytes in removable:
+                shutil.rmtree(self._dir(eid)/'reports'/folder)
+                m['reports']=[r for r in m['reports'] if r['id']!=report_id]
+            if removable:
+                m['revision']+=1; m['updated_at']=now()
+                self._save(m)
+        return {'ok':True,'experiment_id':eid,'removed':[f for _,f,_ in removable],
+                'removed_count':len(removable),'reclaimable_bytes':total,
+                'reclaimable':human_bytes(total),'kept':sorted(keep_ids),'dry_run':dry_run}
 
     def index(self,query='',limit=100,offset=0):
         rows=[]; errors=[]
@@ -671,8 +781,12 @@ class Notebook:
         methods=[c for c in m['checkpoints'] if c['kind']=='method']
         out=[]
         if plan: out += [f'- {step}' for step in plan]+['']
+        superseded={c.get('supersedes') for c in methods if c.get('supersedes')}
         for index, c in enumerate(methods,1):
             label=c.get('title') or '方法'
+            if c['id'] in superseded:
+                later=next((x for x in methods if x.get('supersedes')==c['id']), None)
+                label=f"~~{label}~~（已由第 {methods.index(later)+1 if later else '?'} 条方法更正）"
             suffix=''
             if c.get('replica'): suffix+=f" replica #{c['replica']}"
             if c.get('retry'): suffix+=f" retry #{c['retry']}"
@@ -748,8 +862,20 @@ class Notebook:
         out=['### {s}.1. 看到了什么','']
         for item in res.get('expected_seen') or []: out.append(f'- 预期结果：{item}')
         for item in res.get('unexpected_seen') or []: out.append(f'- 意外的结果：{item}')
-        for c in (c for c in m['checkpoints'] if c['kind']=='observation'):
-            out.append(f"- {c.get('title') or '观测'}：{c['text']}")
+        observations=[c for c in m['checkpoints'] if c['kind']=='observation']
+        superseded={c.get('supersedes') for c in observations if c.get('supersedes')}
+        for c in observations:
+            label=c.get('title') or '观测'
+            if c['id'] in superseded:
+                # A corrected observation stays visible, marked as replaced, so the
+                # record shows what was believed before. Observation bullets are not
+                # numbered, so point at the correcting entry by its own label.
+                later=next((o for o in observations if o.get('supersedes')==c['id']), None)
+                later_label=(later.get('title') or '').strip() if later else ''
+                where=(f'「{later_label}」' if later_label and later_label!=label else '后续观测')
+                out.append(f"- ~~{label}~~（已由{where}更正）：{c['text']}")
+            else:
+                out.append(f"- {label}：{c['text']}")
         if not (res.get('expected_seen') or res.get('unexpected_seen') or any(c['kind']=='observation' for c in m['checkpoints'])):
             out.append('- 未记录观测结果。')
         out += ['','### {s}.2. 没看到什么','']

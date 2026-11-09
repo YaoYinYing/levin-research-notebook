@@ -1,6 +1,6 @@
 # Levin Research Notebook
 
-A personal Levin plugin (v0.11.1) that keeps scientific evidence alive past the chat window.
+A personal Levin plugin (v0.11.2) that keeps scientific evidence alive past the chat window.
 It is a **record-lifecycle** plugin over a real filesystem workspace: it records what was done,
 what produced it, and what was concluded. It does **not** run your science — compute stays in
 Levin Jobs, Slurm, or your own process, and this plugin captures their provenance.
@@ -10,7 +10,7 @@ Levin Jobs, Slurm, or your own process, and this plugin captures their provenanc
 - **Record skill** — `skills/levin-research-notebook-runtime/SKILL.md` drives the agent through
   init → checkpoints → artifact/run registration → validate → finalize, with the stage chain in
   `workflows/standard-research-notebook.md` and limits/recovery in `references/limits.md`.
-- **Deterministic MCP tools** — seven `research_record_*` tools that mutate one canonical
+- **Deterministic MCP tools** — eight `research_record_*` tools that mutate one canonical
   `manifest.json` per experiment. Same inputs, same filesystem result; no LLM in the write path.
 - **Delegated visualization** — when figures help the objective, the parent hands the specialist
   brief in `references/visualization-agent.md` to a general-purpose worker; the parent keeps
@@ -54,6 +54,8 @@ workspace_dir/
 - `research_record_validate` — read-only schema, reference, local-file and bounded integrity check.
 - `research_record_finalize` — validate terminal status + visualization assessment, emit report
   sources and fixed-layout PDF; check `finalized`, `report.render_state`, `validation` (not `ok` alone).
+- `research_record_prune_reports` — delete old PDF snapshot folders to reclaim disk; keeps the
+  newest successful report, never touches `revisions/` or artifacts, `dry_run` lists first.
 - `research_record_index` — search manifests by title/objective/ID with offset/limit paging.
 
 ## Filesystem-as-source-of-truth guarantees

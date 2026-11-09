@@ -64,6 +64,10 @@
   rejected; this is not a sandbox against a malicious process racing filesystem replacement.
 - `validate` separates `valid` (structural, now) from `final_readiness.errors` (what `finalize`
   will require). A `finalize` blocked by a failed gate does not commit terminal execution status.
+- `derived_from` (on `init`) records which experiments a record derives from. `validate` warns when
+  an artifact location resolves to another experiment's `levin_notebook/experiments/exp-.../` and
+  that parent is not declared, and when a declared parent has no manifest in this workspace. The
+  warning is advisory: the reference is legal, the hierarchy was just undocumented.
 - `index` matches every whitespace term (AND, max 8) over titles, objectives, hypotheses,
   checkpoints, interpretation, limitations, artifact locations/descriptions/ids and run
   commands/failures/parameters/environment. It is substring search over a capped 200k haystack, not
@@ -81,11 +85,16 @@
   history; record.md is a generated readable view. Manual edits to record.md are preserved under
   `revisions/human-record-*.md` before refresh. Edit notes.md for continuing human notes.
 - Reports are new snapshot folders on each finalize attempt, including blocked ones (source files,
-  no PDF). `final_readiness` describes the stored manifest, so its "Stored execution_status is wip"
-  line is expected before the first successful finalize, not a blocker.
-- Reports are new snapshot folders on each finalize attempt. `render_state=failed` or `blocked`
-  means not finalized; editable sources survive. A successful finalization retry uses a new
-  request ID if the previous failed attempt was recorded. Never silently reuse a stale PDF.
+  no PDF). `render_state=failed` or `blocked` means not finalized; editable sources survive. A retry
+  after a recorded failed attempt uses a new request ID. Never silently reuse a stale PDF.
+  `final_readiness` describes the stored manifest, so its "Stored execution_status is wip" line is
+  expected before the first successful finalize, not a blocker.
+- Every snapshot copies the whole PDF, so a long campaign grows linearly: 41 finalizes over 8
+  records reached 88 MB. `research_record_prune_reports` deletes old snapshot folders and their
+  manifest entries; `dry_run: true` lists what would go first. It always keeps at least one folder
+  (the newest successful one, or the newest attempt when none succeeded), never touches
+  `revisions/` or artifacts, and leaves validate reporting the delivered report as stale because
+  the manifest revision moved.
 - On an interrupted write inspect manifest, revisions and pending scratch files. Validation is
   read-only and never repairs evidence. Atomic canonical manifest publication can precede the
   generated Markdown/index; a later authorized mutation refreshes views. Do not automatically

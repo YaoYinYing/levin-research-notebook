@@ -590,5 +590,183 @@ class NotebookTests(unittest.TestCase):
         self.assertIn('拷贝授权：user approved 2026-11-06', record)
 
 
+class RegressionTests(unittest.TestCase):
+    """Behaviours that a hand-off review found broken in a real campaign."""
+
+    def setUp(self):
+        root = Path(tempfile.mkdtemp(prefix='regression-', dir=SCRATCH))
+        self.workspace = root
+        self.n = Notebook(root)
+        self.initial = self.n.init('task', 'agent-a', 'Regression task', 'Guard corrected behaviour')
+        self.eid = self.initial['experiment_id']
+        self.directory = Path(self.initial['manifest_path']).parent
+
+    def manifest(self):
+        return json.loads((self.directory / 'manifest.json').read_text())
+
+    def finalize_ok(self, request_id='f'):
+        return self.n.finalize(self.eid, 'success', 'Interpretation', 'Synthetic limitation',
+                               {'beneficial': False, 'reason': 'No result', 'figure_ids': [], 'reviewed_by': 'test'},
+                               request_id=request_id)
+
+    def test_second_finalize_that_omits_lessons_keeps_the_stored_ones(self):
+        self.n.checkpoint(self.eid, 'agent-a', 'method', 'Procedure recorded once')
+        self.n.finalize(self.eid, 'success', 'First reading', 'Synthetic limitation',
+                        {'beneficial': False, 'reason': 'No result', 'figure_ids': [], 'reviewed_by': 'test'},
+                        lessons=['Never trust an unverified number'], request_id='one')
+        self.n.checkpoint(self.eid, 'agent-a', 'observation', 'Second look')
+        done = self.finalize_ok('two')
+        self.assertTrue(done['finalized'])
+        self.assertEqual(self.manifest()['lessons'], ['Never trust an unverified number'])
+
+    def test_explicit_empty_lessons_clears_them(self):
+        self.n.checkpoint(self.eid, 'agent-a', 'method', 'Procedure recorded once')
+        self.n.finalize(self.eid, 'success', 'First reading', 'Synthetic limitation',
+                        {'beneficial': False, 'reason': 'No result', 'figure_ids': [], 'reviewed_by': 'test'},
+                        lessons=['Withdrawn lesson'], request_id='one')
+        self.n.checkpoint(self.eid, 'agent-a', 'observation', 'Second look')
+        self.n.finalize(self.eid, 'success', 'First reading', 'Synthetic limitation',
+                        {'beneficial': False, 'reason': 'No result', 'figure_ids': [], 'reviewed_by': 'test'},
+                        lessons=[], request_id='two')
+        self.assertEqual(self.manifest()['lessons'], [])
+
+    def test_unconventional_unit_blocks_until_acknowledged(self):
+        self.n.checkpoint(self.eid, 'agent-a', 'method', 'Measured the distance')
+        blocked = self.n.finalize(self.eid, 'success', 'Interpretation', 'Synthetic limitation',
+                                  {'beneficial': False, 'reason': 'No result', 'figure_ids': [], 'reviewed_by': 'test'},
+                                  quantities=[{'name': 'rmsd', 'value': 2.1, 'unit': 'nm', 'unit_acknowledged': False}],
+                                  request_id='blocked')
+        self.assertFalse(blocked['finalized'])
+        accepted = self.n.finalize(self.eid, 'success', 'Interpretation', 'Synthetic limitation',
+                                   {'beneficial': False, 'reason': 'No result', 'figure_ids': [], 'reviewed_by': 'test'},
+                                   quantities=[{'name': 'rmsd', 'value': 2.1, 'unit': 'nm', 'unit_acknowledged': True}],
+                                   request_id='accepted')
+        self.assertTrue(accepted['finalized'])
+
+    def test_unknown_quantity_name_needs_a_declared_dimension(self):
+        self.n.checkpoint(self.eid, 'agent-a', 'method', 'Measured the attack distance')
+        undecided = self.n.finalize(self.eid, 'success', 'Interpretation', 'Synthetic limitation',
+                                    {'beneficial': False, 'reason': 'No result', 'figure_ids': [], 'reviewed_by': 'test'},
+                                    quantities=[{'name': 'd_attack', 'value': 12.0, 'unit': 'Å'}],
+                                    request_id='undecided')
+        self.assertFalse(undecided['finalized'])
+        declared = self.n.finalize(self.eid, 'success', 'Interpretation', 'Synthetic limitation',
+                                   {'beneficial': False, 'reason': 'No result', 'figure_ids': [], 'reviewed_by': 'test'},
+                                   quantities=[{'name': 'd_attack', 'value': 12.0, 'unit': 'Å', 'dimension': 'L'}],
+                                   request_id='declared')
+        self.assertTrue(declared['finalized'])
+        wrong = self.n.finalize(self.eid, 'success', 'Interpretation', 'Synthetic limitation',
+                                {'beneficial': False, 'reason': 'No result', 'figure_ids': [], 'reviewed_by': 'test'},
+                                quantities=[{'name': 'd_attack', 'value': 12.0, 'unit': 'Å', 'dimension': 'M L^2 T^-2'}],
+                                request_id='wrong')
+        self.assertFalse(wrong['finalized'])
+
+    def test_observation_and_method_can_be_superseded(self):
+        first = self.n.checkpoint(self.eid, 'agent-a', 'observation', 'Value was 1.9', title='First reading')
+        corrected = self.n.checkpoint(self.eid, 'agent-a', 'observation', 'Value was 2.4',
+                                      title='Re-read after recalibration', supersedes=first['checkpoint_id'])
+        self.assertTrue(corrected['ok'])
+        method = self.n.checkpoint(self.eid, 'agent-a', 'method', 'Ran 10 ns')
+        self.n.checkpoint(self.eid, 'agent-a', 'method', 'Ran 100 ns', supersedes=method['checkpoint_id'])
+        record = (self.directory / 'record.md').read_text()
+        # The wrong value stays visible, struck through, so the record shows the correction.
+        self.assertIn('~~First reading~~', record)
+        self.assertIn('已由「Re-read after recalibration」更正', record)
+        self.assertIn('~~方法~~（已由第 2 条方法更正）', record)
+
+    def test_a_conclusion_may_not_supersede_a_failure_note(self):
+        failed = self.n.checkpoint(self.eid, 'agent-a', 'failure', 'Solver diverged at step 40')
+        with self.assertRaises(NotebookError):
+            self.n.checkpoint(self.eid, 'agent-a', 'conclusion', 'Diverged', supersedes=failed['checkpoint_id'])
+
+    def test_implementer_can_be_added_on_resume(self):
+        resumed = Notebook(self.workspace).init('task', 'agent-b', 'Regression task', 'Guard corrected behaviour',
+                                                implementer={'kind': 'agent', 'name': 'Reviewer', 'model': 'claude'})
+        self.assertTrue(resumed['resumed'])
+        self.assertEqual(self.manifest()['implementer'], {'kind': 'agent', 'name': 'Reviewer', 'model': 'claude'})
+        # A second resume must not rewrite who did the work.
+        Notebook(self.workspace).init('task', 'agent-b', 'Regression task', 'Guard corrected behaviour',
+                                      implementer={'kind': 'user', 'name': 'Someone else'})
+        self.assertEqual(self.manifest()['implementer']['name'], 'Reviewer')
+
+    def test_implementer_as_a_string_explains_the_expected_shape(self):
+        with self.assertRaises(NotebookError) as caught:
+            self.n.init('task2', 'agent-a', 'Other task', 'Explain the shape',
+                        implementer='{"kind": "agent"}')
+        self.assertIn('implementer must be an object', str(caught.exception))
+
+    def test_prune_reports_keeps_the_newest_success_and_all_revisions(self):
+        data = self.directory / 'data' / 'in.csv'
+        data.write_text('a\n1\n')
+        self.n.register_artifact(self.eid, {'role': 'input', 'location': str(data), 'description': 'Input'})
+        self.n.checkpoint(self.eid, 'agent-a', 'method', 'Ran three finalizes')
+        for index in range(3):
+            self.assertTrue(self.finalize_ok(f'snapshot-{index}')['finalized'])
+        before = len(list((self.directory / 'reports').iterdir()))
+        self.assertEqual(before, 3)
+        result = self.n.prune_reports(self.eid)
+        self.assertEqual(result['removed_count'], 2)
+        self.assertEqual(len(list((self.directory / 'reports').iterdir())), 1)
+        self.assertEqual(len(self.manifest()['reports']), 1)
+        self.assertTrue(self.n.validate(self.eid)['valid'])
+        self.assertGreater(len(list((self.directory / 'revisions').iterdir())), 0)
+        self.assertIn(result['kept'][0], [p.name for p in (self.directory / 'reports').iterdir()])
+
+    def test_prune_reports_dry_run_deletes_nothing(self):
+        data = self.directory / 'data' / 'in.csv'
+        data.write_text('a\n1\n')
+        self.n.register_artifact(self.eid, {'role': 'input', 'location': str(data), 'description': 'Input'})
+        self.n.checkpoint(self.eid, 'agent-a', 'method', 'Ran two finalizes')
+        for index in range(2):
+            self.finalize_ok(f'snapshot-{index}')
+        plan = self.n.prune_reports(self.eid, dry_run=True)
+        self.assertEqual(plan['removed_count'], 1)
+        self.assertEqual(len(list((self.directory / 'reports').iterdir())), 2)
+
+    def test_prune_reports_never_empties_a_record_with_only_blocked_attempts(self):
+        self.finalize_ok('no-method-yet')  # blocked: no method checkpoint recorded
+        self.assertTrue((self.directory / 'reports').is_dir())
+        self.n.prune_reports(self.eid)
+        self.assertGreaterEqual(len(list((self.directory / 'reports').iterdir())), 1)
+
+    def test_derived_from_records_the_campaign_hierarchy(self):
+        parent = Notebook(self.workspace).init('parent-task', 'agent-a', 'Parent', 'Upstream work')['experiment_id']
+        child = Notebook(self.workspace).init('child-task', 'agent-a', 'Child', 'Downstream work',
+                                              derived_from=[parent])['experiment_id']
+        manifest = json.loads((self.workspace / 'levin_notebook' / 'experiments' / child / 'manifest.json').read_text())
+        self.assertEqual(manifest['derived_from'], [parent])
+
+    def test_derived_from_rejects_an_id_that_is_not_an_experiment(self):
+        with self.assertRaises(NotebookError):
+            self.n.init('task3', 'agent-a', 'Third', 'Bad parent id', derived_from=['parent-task'])
+
+    def test_cross_record_reference_without_a_declared_parent_warns(self):
+        other = Notebook(self.workspace).init('other-task', 'agent-a', 'Other', 'Separate work')['experiment_id']
+        other_manifest = self.workspace / 'levin_notebook' / 'experiments' / other / 'manifest.json'
+        other_file = other_manifest.parent / 'data' / 'shared.csv'
+        other_file.write_text('x\n1\n')
+        Notebook(self.workspace).register_artifact(other, {'role': 'input', 'location': str(other_file),
+                                                           'description': 'Shared input'})
+        self.n.checkpoint(self.eid, 'agent-a', 'method', 'Used the shared table')
+        self.n.register_artifact(self.eid, {'role': 'input', 'location': str(other_file),
+                                            'description': 'Borrowed from the other record'})
+        warnings = self.n.validate(self.eid)['warnings']
+        self.assertTrue(any('derived_from' in w and other in w for w in warnings))
+
+    def test_declaring_the_parent_silences_the_cross_record_warning(self):
+        other = Notebook(self.workspace).init('other-task', 'agent-a', 'Other', 'Separate work')['experiment_id']
+        other_file = self.workspace / 'levin_notebook' / 'experiments' / other / 'data' / 'shared.csv'
+        other_file.write_text('x\n1\n')
+        Notebook(self.workspace).register_artifact(other, {'role': 'input', 'location': str(other_file),
+                                                           'description': 'Shared input'})
+        declared = Notebook(self.workspace).init('task', 'agent-a', 'Regression task', 'Guard corrected behaviour',
+                                                 derived_from=[other])['experiment_id']
+        Notebook(self.workspace).register_artifact(declared, {'role': 'input', 'location': str(other_file),
+                                                              'description': 'Borrowed from the other record'})
+        Notebook(self.workspace).checkpoint(declared, 'agent-a', 'method', 'Used the shared table')
+        warnings = Notebook(self.workspace).validate(declared)['warnings']
+        self.assertFalse(any('derived_from' in w for w in warnings))
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

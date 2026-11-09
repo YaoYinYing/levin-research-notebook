@@ -155,6 +155,14 @@
             "bytes": 184320000000,
             "files": 1204
           }
+        ],
+        "quantities": [
+          {
+            "name": "rmsd",
+            "value": 2.1,
+            "unit": "Å",
+            "replica": 1
+          }
         ]
       },
       "server": "runner"
@@ -187,6 +195,29 @@
         "query": "convergence",
         "limit": 20,
         "offset": 0
+      },
+      "server": "runner"
+    },
+    {
+      "id": "prune-reports-dry-run",
+      "tool": "research_record_prune_reports",
+      "purpose": "List old PDF snapshots that could be deleted; deletes nothing",
+      "arguments": {
+        "workspace_dir": "/Users/me/project",
+        "experiment_id": "exp-00000000000000000000000000000000",
+        "keep": "last-success",
+        "dry_run": true
+      },
+      "server": "runner"
+    },
+    {
+      "id": "prune-reports-apply",
+      "tool": "research_record_prune_reports",
+      "purpose": "Reclaim disk after repeated finalizes; keeps the newest successful PDF",
+      "arguments": {
+        "workspace_dir": "/Users/me/project",
+        "experiment_id": "exp-00000000000000000000000000000000",
+        "keep": "last-success"
       },
       "server": "runner"
     }

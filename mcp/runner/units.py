@@ -209,6 +209,34 @@ def parse_unit(text: str) -> tuple[dict[str, int], float]:
     return dims, factor
 
 
+_DIM_SYMBOL = {"L": "L", "T": "T", "M": "M", "N": "N", "TH": "TH", "TEMP": "TH",
+               "A": "A", "Q": "Q"}
+_DIM_TOKEN = re.compile(r"^([A-Za-z]+)(?:\^?([+-]?\d+))?$")
+
+
+def parse_dimension(text: str) -> dict[str, int]:
+    """Parse a dimension formula such as `L`, `L^2`, `M L^2 T^-2 N^-1`.
+
+    Deliberately separate from `parse_unit`: `L` is a dimension symbol, not a unit
+    name, so a caller declaring dimension="L" for `d_attack` must not be told their
+    declaration is unparsable.
+    """
+    raw = " ".join(str(text or "").replace("\u00b7", " ").replace("*", " ").split())
+    if not raw or raw in ("1", "dimensionless", "\u65e0\u91cf\u7eb2"):
+        return {}
+    dims: dict[str, int] = {}
+    for token in raw.replace("/", " ").split():
+        match = _DIM_TOKEN.match(token)
+        if not match:
+            raise ValueError(f"\u65e0\u6cd5\u89e3\u6790\u7684\u91cf\u7eb2\u7247\u6bb5\uff1a{token}")
+        symbol, power = match.group(1), match.group(2)
+        base = _DIM_SYMBOL.get(symbol.upper())
+        if base is None:
+            raise ValueError(f"\u672a\u77e5\u91cf\u7eb2\u7b26\u53f7\uff1a{symbol}")
+        dims[base] = dims.get(base, 0) + (int(power) if power else 1)
+    return {k: v for k, v in dims.items() if v}
+
+
 def _dims_text(dims: dict[str, int]) -> str:
     """Readable dimension formula, e.g. `M·L²·T⁻²·N⁻¹`."""
     if not dims:
@@ -271,6 +299,20 @@ def check(quantity: dict) -> list[dict]:
 
     family = family_of(name)
     unit = quantity.get("unit")
+    # A caller may state the dimension explicitly for a domain-specific name; that is
+    # how `d_attack` or `RMSF_core` become checkable without teaching the library
+    # every field's vocabulary.
+    declared = quantity.get("dimension")
+    if declared is not None:
+        try:
+            declared_dims = parse_dimension(str(declared))
+        except ValueError as error:
+            issues.append({"code": "unparsable_dimension",
+                           "text": f"{name} 的 dimension {declared!r} 无法解析：{error}"})
+            declared_dims = None
+    else:
+        declared_dims = None
+
     if unit is None or str(unit).strip() == "":
         if family and FAMILIES[family]["dims"]:
             issues.append({"code": "missing_unit",
@@ -279,8 +321,20 @@ def check(quantity: dict) -> list[dict]:
     try:
         dims, factor = parse_unit(str(unit))
     except ValueError as error:
+        # An unparsable unit is a hard error regardless of whether the name is known.
         issues.append({"code": "unparsable_unit", "text": f"{name} 的单位 {unit!r} 无法解析：{error}"})
         return issues
+
+    if declared_dims is not None:
+        if dims != declared_dims:
+            issues.append({"code": "dimension_mismatch",
+                           "text": f"{name} 与声明的 dimension 不符：{unit!r} 给出 {_dims_text(dims)}，"
+                                   f"声明为 {declared!r}（{_dims_text(declared_dims)}）"})
+        family = None   # the explicit declaration replaces the alias table
+    elif family is None:
+        issues.append({"code": "unknown_quantity",
+                       "text": f"{name} 不在已知量族里，也没有给出 dimension；"
+                               f"单位 {unit!r} 只能确认可解析，不能确认是否配这个量"})
 
     if family:
         expected = FAMILIES[family]["dims"]
@@ -295,8 +349,11 @@ def check(quantity: dict) -> list[dict]:
             except ValueError:
                 pfactor = factor
             if abs(factor - pfactor) > _UNIT_SCALE_TOL * max(abs(pfactor), 1e-30):
-                issues.append({"code": "unit_scale",
-                               "text": f"{name} 与记录惯例不同：{unit!r}，本库该量用 {preferred}"})
+                accepted = quantity.get("unit_acknowledged") is True
+                issues.append({"code": "unit_scale_acknowledged" if accepted else "unit_scale",
+                               "text": f"{name} 与记录惯例不同：{unit!r}，本库该量用 {preferred}"
+                                       + ("（已显式承认，不阻断）" if accepted else
+                                          "；如确为有意为之，传 unit_acknowledged=true")})
     elif not dims:
         pass  # a genuinely dimensionless name with a dimensionless unit is fine
 
@@ -342,6 +399,7 @@ def check_all(quantities: list[dict]) -> list[dict]:
         # numbers directly, even though both spellings are legal.
         signature = (_dims_text(dims), round(math.log10(factor), 9) if factor > 0 else 0.0)
         if name in seen and seen[name][0] != signature:
+            # Two scales for one quantity in one record has no legitimate reading.
             issues.append({"code": "inconsistent_unit",
                            "index": index,
                            "text": f"{name} 在不同位置用了不同单位：{seen[name][1]} 与 {unit}，"
@@ -351,10 +409,42 @@ def check_all(quantities: list[dict]) -> list[dict]:
     return issues
 
 
+def _replica_of(quantity: dict):
+    """Replica label used to group rows; None for a single-run measurement."""
+    replica = quantity.get("replica")
+    if replica in (None, ""):
+        return None
+    if isinstance(replica, bool) or not isinstance(replica, int) or replica < 1:
+        return None
+    return replica
+
+
+def duplicate_report(quantities: list[dict]) -> list[dict]:
+    """Flag the same name at the same replica twice; that is always a mistake."""
+    issues = []
+    seen: dict[tuple[str, object], int] = {}
+    for index, quantity in enumerate(quantities or []):
+        if not isinstance(quantity, dict):
+            continue
+        name = str(quantity.get("name") or "").strip()
+        if not name:
+            continue
+        key = (name, _replica_of(quantity))
+        if key in seen:
+            where = "未标副本" if key[1] is None else f"副本 {key[1]}"
+            issues.append({"code": "duplicate_quantity",
+                           "index": index,
+                           "text": f"{name}（{where}）在第 {seen[key] + 1} 项已出现过，"
+                                   f"同一副本不应重复记录同名量"})
+        else:
+            seen[key] = index
+    return issues
+
+
 def summary(quantities: list[dict]) -> list[dict]:
     """Rows for the report table: canonical unit, dimension formula and状态."""
     rows = []
-    issues = check_all(quantities)
+    issues = check_all(quantities) + duplicate_report(quantities)
     by_index: dict[int, list[str]] = {}
     for issue in issues:
         if "index" in issue:
@@ -373,11 +463,12 @@ def summary(quantities: list[dict]) -> list[dict]:
         codes = {issue["code"] for issue in issues if issue.get("index") == index}
         if not problems:
             status = "通过"
-        elif codes - {"unit_scale"}:
+        elif codes - {"unit_scale", "unit_scale_acknowledged"}:
             status = "需修正"
         else:
             status = "惯例差异"
         rows.append({
+            "replica": _replica_of(quantity),
             "name": str(quantity.get("name") or ""),
             "value": quantity.get("value"),
             "unit": str(unit) if unit not in (None, "") else "—",

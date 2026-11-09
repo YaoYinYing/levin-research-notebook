@@ -55,6 +55,20 @@ class SchemaSurfaceTests(unittest.TestCase):
         for field in ("bibtex_path", "bibtex"):
             self.assertIn(field, self.props("research_record_finalize"))
 
+    def test_prune_reports_tool_is_exposed(self):
+        schema = self.tools["research_record_prune_reports"].input_schema
+        self.assertIn("experiment_id", schema["properties"])
+        self.assertEqual(schema["properties"]["keep"]["enum"], ["last-success", "all-success"])
+        self.assertIn("dry_run", schema["properties"])
+
+    def test_init_exposes_derived_from(self):
+        self.assertIn("derived_from", self.props("research_record_init"))
+
+    def test_quantities_expose_replica_and_dimension(self):
+        items = self.tools["research_record_finalize"].input_schema["properties"]["quantities"]["items"]
+        for field in ("replica", "dimension", "unit_acknowledged"):
+            self.assertIn(field, items["properties"])
+
     def test_register_artifact_exposes_remote_provenance(self):
         for field in ("source_origin", "remote_host", "remote_path", "remote_copy_permission"):
             self.assertIn(field, self.props("research_record_register_artifact", nested="artifact"))

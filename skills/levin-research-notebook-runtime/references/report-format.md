@@ -20,8 +20,25 @@ of quantity, and the dimension formula. Severity is deliberate:
 | Wrong dimension (a temperature recorded in `ps`) | blocks finalization |
 | Unit missing while the name implies one (`rmsd` with no unit) | blocks finalization |
 | Unparsable unit (`furlong`) | blocks finalization |
-| Legal but unconventional unit (`kcal/mol` where the notebook uses `kJ/mol`) | warning only |
+| Unknown quantity name with no declared `dimension` | blocks finalization |
+| Legal but unconventional unit (`kcal/mol` where the notebook uses `kJ/mol`) | blocks unless acknowledged |
 | Same quantity in two different scales (`rmsd` in both `Å` and `nm`) | blocks finalization |
+| Same name recorded twice for one replica | blocks finalization |
+
+Two escape hatches exist because the notebook's default is not always the field's convention:
+
+```text
+{"name": "d_attack", "value": 12.0, "unit": "Å", "dimension": "L"}   # domain-specific name
+{"name": "delta_g",  "value": -10.1, "unit": "kcal/mol", "unit_acknowledged": true}
+```
+
+`dimension` takes a dimension formula (`L`, `M L^2 T^-2 N^-1`, `1`), not a unit — you are telling
+the checker what kind of quantity this is. `unit_acknowledged` says "yes, deliberately this unit",
+and the item is then reported as 惯例差异 instead of blocking. Neither one converts the value.
+
+For replicates, add `replica`: three trajectories reporting the same `rmsd` stay three rows with
+an explicit replica column, and recording the same name at the same replica twice is an error
+rather than three indistinguishable rows.
 
 The checker **never converts or rewrites your value** — it reports, and you decide. Omit
 `unit` only for genuinely dimensionless scores. Accepted spellings include `Å`, `nm`, `ps`,
