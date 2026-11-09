@@ -19,7 +19,12 @@ section, and the title is the heading.
 | `execution_status` | `wip`/`success`/`failed` as the record's current state |
 
 A `failure` checkpoint may not be superseded: the failure happened, and rewriting it would be the one
-thing this plugin exists to prevent. Record the recovery as a separate `resume` or `observation`.
+thing this plugin exists to prevent. Record the recovery as a separate `resume`.
+
+`resume` and `note` checkpoints are not methods or results, so they are rendered in a trailing
+**恢复与备注** section instead of the numbered lists: a "picked up the next day" note belongs there, not
+as method 3.2. That section exists only when such a checkpoint exists, so the fixed spine keeps its
+numbering otherwise.
 
 Vague text is rejected for failures (`无结果`, `failed`, `error` alone). State what broke.
 
@@ -39,6 +44,10 @@ register_artifact(..., artifact={"role": "input", "location": "data/trace.csv",
 register_run(..., run={"reference_id": "run-figs", "backend": "local", ...})
 register_artifact(..., artifact={"role": "figure", "run_id": "run-figs", ...})
 ```
+
+The alias is resolved **before** the entry is stored, so what lands in `manifest.json` is always the
+canonical id — a record cannot be valid at registration and invalid at `validate`. An update that omits
+`reference_id` keeps the stored one, so a routine refresh never destroys the alias.
 
 Two rules the error messages also state: `evidence_ids` takes artifacts and runs, **never** checkpoint
 ids; and `run.id` on a fresh run means *update*, so omit it to create.

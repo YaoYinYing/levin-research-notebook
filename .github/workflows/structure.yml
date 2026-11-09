@@ -1,0 +1,156 @@
+name: Structure
+
+# Repository-shape gates that a validator enforces but that need none of the
+# Levin app: SKILL.md length, the skill's own reference tree, version agreement,
+# markdown link integrity, a plugin-spec dry-run, and a check of the packaged
+# release artefact.
+#
+# Four small jobs so a broken skill tree, a broken link, a broken spec and a
+# broken package are distinguishable at a glance. The first two install nothing
+# (standard library only) and take seconds; the other two need a repo copy plus a
+# release asset, and are the only ones that touch the network.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: structure-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  skill-gates:
+    name: SKILL.md size, reference tree, versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      # Gates: SKILL.md <= 12000 characters (the external validator's hard limit);
+      # every relative link and #anchor from SKILL.md resolves; the frontmatter name
+      # matches its directory; plugin_spec.py, README.md and (when present) the
+      # frontmatter version agree. Standard library only.
+      - name: Structure gates
+        run: python .github/scripts/check_structure.py
+
+      # .github/requirements-ci.txt repeats plugin_spec.py's runtime pins because
+      # pip cannot read them out of a Python tuple. This keeps the copy honest.
+      - name: Runtime pins agree with plugin_spec.py
+        run: python .github/scripts/check_requirements.py
+
+  links:
+    name: Markdown relative links
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      # Deliberately offline: a red build must mean a link inside this repository
+      # is broken, not that a third-party site was down. Relative file links are
+      # resolved on disk; #fragment links are matched against the target file's
+      # headings; external http(s) links are counted and listed, never fetched.
+      - name: Check relative links and anchors in every tracked *.md
+        run: python .github/scripts/check_links.py --verbose
+
+  plugin-spec:
+    name: Plugin spec dry-run
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: .levin-plugin/vendor/python
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: .github/requirements-ci.txt
+
+      # Only jsonschema is needed here (the schema metaschema validation). The pin
+      # is read out of requirements-ci.txt so there is still exactly one place that
+      # names a version.
+      - name: Install jsonschema
+        run: python -m pip install --disable-pip-version-check "$(grep -m1 '^jsonschema==' .github/requirements-ci.txt)"
+
+      # plugin_spec.py starts with `from levin_plugin_sdk import ...`. That SDK is
+      # gitignored with the rest of .levin-plugin/, is not on PyPI, and the Creator
+      # CLI that normally produces it lives inside the macOS app bundle, so a runner
+      # cannot run it. The public copy ships inside the release asset; that is what
+      # this step extracts. If no asset exists the step fails and says so.
+      - name: Provision the plugin SDK from a release asset
+        run: python .github/scripts/fetch_plugin_sdk.py --root .
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+      # Asserts that plugin_spec.py imports and declares the eight
+      # research_record_* tools plus the preflight probe, that every declared
+      # handler exists in adapter.py, and that all input schemas are valid JSON
+      # Schema 2020-12. When a compiled .levin-plugin/plugin.json is present it also
+      # replays the Creator's own validate_compiled_plugin against the tree.
+      - name: Plugin spec dry-run
+        run: python .github/scripts/check_plugin_spec.py --root . --summary plugin-spec.json
+
+      - name: Upload the dry-run summary
+        uses: actions/upload-artifact@v6
+        with:
+          name: plugin-spec-dry-run
+          path: plugin-spec.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  released-package:
+    # Stated boundary: the Levin Creator CLI cannot run here, so this job cannot
+    # package the working tree. What it can do is replay the Creator's consistency
+    # check against the artefact that was actually published, because that tarball
+    # carries its own vendored SDK. It therefore validates the last release, not
+    # HEAD — and that is the drift this repository has no other way to catch: the
+    # tree is at 0.11.5 while the newest published asset is 0.11.2.
+    #
+    # The "version you would ship has no asset" condition is reported, not failed:
+    # publishing a release is a human action, and a required-check that turns red
+    # every time plugin_spec.py is bumped teaches people to ignore it. The hard
+    # failures are reserved for a package that is internally inconsistent.
+    name: Released package is self-consistent
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      # Prefers the release tagged v<plugin_spec.py version>; falls back to the
+      # newest release with a warning when the tree has moved ahead of its assets.
+      - name: Download the packaged artefact
+        run: |
+          python .github/scripts/download_release_asset.py --root . --output released.levin-plugin.tgz
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+      # Checks the archive contents, that the tag matches the packaged version,
+      # that the packaged plugin_spec.py imports against the packaged SDK, that
+      # its SKILL.md is within the 12000-character limit, and finally runs
+      # levin_plugin_sdk.compiler.validate_compiled_plugin on it — the same check
+      # the Creator performs.
+      - name: Validate the released package
+        shell: bash
+        run: python .github/scripts/check_package.py released.levin-plugin.tgz --expect-version "$RELEASED_TAG"

@@ -269,7 +269,11 @@ class NotebookTests(unittest.TestCase):
         self.assertEqual((self.directory/'record.md').read_text(),Notebook.markdown(before))
 
     def test_finalize_pdf_replay_and_report_integrity(self):
-        from pypdf import PdfReader
+        try:
+            from pypdf import PdfReader
+        except ImportError:
+            self.skipTest("pypdf is a test-only dependency; install it to read the rendered PDF")
+            return
         self.n.checkpoint(self.eid,'agent-a','method','Synthetic method; no physical validation')
         args=(self.eid,'success','Inconclusive synthetic test','No empirical data',{'beneficial':False,'reason':'No numerical result to plot','figure_ids':[],'reviewed_by':'automated test'})
         result=self.n.finalize(*args,request_id='final-1')
@@ -851,6 +855,59 @@ class RegressionTests(unittest.TestCase):
         # the default shape stays small
         plain, _errors = self.n.index('')
         self.assertNotIn('summary', plain[0])
+
+    def test_an_alias_is_stored_as_the_canonical_id(self):
+        # Registration accepted an alias but persisted it verbatim, so the record was
+        # valid on write and invalid at validate.
+        script = self.artifact('script', 'plot.py', reference_id='b5-make')['artifact_id']
+        data = self.artifact('input', 'trace.csv', reference_id='alt-build-data')['artifact_id']
+        run = self.n.register_run(self.eid, dict(self.run_record(input_ids=['alt-build-data']),
+                                                 reference_id='run-figs'))['run_id']
+        figure = self.n.register_artifact(self.eid, {'role': 'figure', 'location': str(self.file('f.svg')),
+                                                     'description': 'Figure', 'input_ids': ['alt-build-data'],
+                                                     'script_id': 'b5-make', 'run_id': 'run-figs'})
+        stored = next(a for a in self.manifest()['artifacts'] if a['id'] == figure['artifact_id'])
+        self.assertEqual(stored['input_ids'], [data])
+        self.assertEqual(stored['script_id'], script)
+        self.assertEqual(stored['run_id'], run)
+        self.assertTrue(self.n.validate(self.eid)['valid'], self.n.validate(self.eid)['errors'])
+
+    def test_updating_a_run_keeps_its_alias(self):
+        self.artifact('input')
+        self.n.register_run(self.eid, dict(self.run_record(), reference_id='run-figs'))
+        self.n.register_run(self.eid, dict(self.run_record(), id='run-figs', command='python v2.py'))
+        stored = self.manifest()['runs'][0]
+        self.assertEqual(stored['reference_id'], 'run-figs')
+        # and the alias still resolves afterwards
+        self.assertTrue(self.n.register_run(self.eid, dict(self.run_record(), id='run-figs',
+                                                            command='python v3.py'))['ok'])
+
+    def test_refreshing_an_artifact_keeps_its_alias(self):
+        self.artifact('input', reference_id='alt-build-data')
+        self.artifact('input', reference_id=None)
+        stored = self.manifest()['artifacts'][0]
+        self.assertEqual(stored['reference_id'], 'alt-build-data')
+
+    def test_recovery_and_notes_are_rendered(self):
+        # `resume` and `note` were accepted, given ids, and never appeared anywhere,
+        # while the skill tells the author to record recovery as `resume`.
+        evidence = self.artifact('input')['artifact_id']
+        self.n.checkpoint(self.eid, 'agent-a', 'resume', 'Picked up after the scheduler preempted the job',
+                          title='第二天续做', evidence_ids=[evidence])
+        self.n.checkpoint(self.eid, 'agent-a', 'note', 'Cluster noticeboard said node7 was rebooted',
+                          title='环境备注')
+        record = (self.directory / 'record.md').read_text()
+        self.assertRegex(record, r'## \d+\. 恢复与备注')
+        self.assertIn('Picked up after the scheduler preempted the job', record)
+        self.assertIn('Cluster noticeboard said node7 was rebooted', record)
+        self.assertIn('**续做**', record)
+        self.assertIn('**备注**', record)
+
+    def test_a_record_without_notes_keeps_the_plain_spine(self):
+        self.artifact('input')
+        self.n.checkpoint(self.eid, 'agent-a', 'method', 'Procedure recorded')
+        record = (self.directory / 'record.md').read_text()
+        self.assertNotIn('恢复与备注', record)
 
     def test_derived_from_records_the_campaign_hierarchy(self):
         parent = Notebook(self.workspace).init('parent-task', 'agent-a', 'Parent', 'Upstream work')['experiment_id']

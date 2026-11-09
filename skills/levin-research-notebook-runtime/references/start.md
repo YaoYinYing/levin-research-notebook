@@ -17,7 +17,7 @@ Fields that decide whether the report reads as science or as a stub:
 |---|---|
 | `title`, `objective` | report title, and the first sentence of the three-sentence summary |
 | `purpose` | section 1 实验目的 — why this follows from earlier work (a prior MD setup, a gap in the data) |
-| `hypothesis`, `expected_result` | the a priori expectation, and section 1's fallback when `purpose` is absent |
+| `hypothesis`, `expected_result` | the a priori expectation; `hypothesis` is the **为什么要做** header line's fallback when `purpose` is absent (section 1 itself reads `purpose` only) |
 | `implementer` | `{"kind": "user"|"agent", "name": ..., "model": ...}` — the fact table's 实施人 row |
 | `environment_location` | the uv/conda environment path actually used, not the interpreter name |
 | `record_type` | which middle sections the report uses (see [report](report.md)) |

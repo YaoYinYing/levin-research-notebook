@@ -66,8 +66,10 @@ Behaviour that is documented where it is used, not here:
   `scripts/plot_style.py`, while captions stay in the body faces. Missing platform fonts fall back to
   bundled Vera/Courier and are reported through `unsupported_codepoints`, never silently substituted.
 - ReportLab is mandatory and pinned; Quarto/Typst are optional and not installed automatically.
-  QMD export sets execution disabled. Markdown tables/code are literal text; complex math and
-  advanced typography need Quarto. Unsupported glyphs are explicit in renderer metadata.
+  QMD export sets execution disabled. Tables render as a grid with over-long cells truncated (full text
+  stays in `record.md`); a pipe line without a `| --- |` separator prints literally; one-line `$$ … $$`
+  renders as a raster image, and a multi-line `$$` block is not recognised. Advanced typography needs
+  Quarto. Unsupported glyphs are explicit in renderer metadata.
 - Local file locks serialize metadata mutations. Atomic replace and immutable prior manifests
   preserve recovery evidence. NFS/distributed locking guarantees are not claimed.
 - The plugin never writes original data. Integrity checks can detect changes by other programs;

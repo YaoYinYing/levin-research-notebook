@@ -1,33 +1,59 @@
 # Levin Research Notebook
 
-A personal Levin plugin (v0.11.5) that keeps scientific evidence alive past the chat window.
-It is a **record-lifecycle** plugin over a real filesystem workspace: it records what was done,
-what produced it, and what was concluded. It does **not** run your science — compute stays in
-Levin Jobs, Slurm, or your own process, and this plugin captures their provenance.
+A personal Levin plugin (v0.11.5) that keeps scientific evidence alive past the chat window. It is a
+**record-lifecycle** plugin over a real filesystem workspace: it records what was done, what produced
+it, and what was concluded. It does **not** run your science — compute stays in Levin Jobs, Slurm, or
+your own process, and this plugin captures their provenance.
+
+Eight `research_record_*` MCP tools mutate one canonical `manifest.json` per experiment; `finalize`
+turns it into an editable Markdown/Quarto/LaTeX source and a fixed-layout PDF. No database, no service,
+no network, no telemetry, no LLM in the write path.
+
+**Start here:** [why this and not an ELN](docs/why-not-an-eln.md) ·
+[the five stages with a real transcript](docs/lifecycle.md) ·
+[how the docs are organised](docs/README.md)
+
+## Quickstart
+
+The plugin runtime installs five pinned packages (`jsonschema`, `filelock`, `reportlab`, `matplotlib`,
+`bibtexparser`). Two steps get you a working toolchain — `compile` vendors the SDK that the schema test
+imports, and the suite runs on the standard library alone:
+
+```bash
+node <creator>/scripts/levin-plugin-creator.cjs compile .   # vendors .levin-plugin/ (gitignored)
+python -m unittest discover -s tests                        # 161 cases in the working tree (156 in release 0.11.5)
+python examples/computational_demo.py --workspace /tmp/notebook-demo
+```
+
+Counts drift; `grep -c 'def test' tests/*.py` is the authority. The demo is a synthetic Euler-vs-analytic
+decay study: raw input → script → run → derived data → figure → method/observation/conclusion
+checkpoints → validate → finalize → index. It writes a real `levin_notebook/` with a 5-page PDF, and
+it is the fastest way to see what the tools actually produce. Why both prerequisites are necessary —
+and the two failures you will hit without them — is in
+[CONTRIBUTING](CONTRIBUTING.md#running-the-tests).
 
 ## What it does
 
-- **Record skill** — a short entry point that loads one branch per stage instead of the whole
-  manual. `SKILL.md` carries the five stages and the invariants; `references/` splits into
-  `start.md` · `evidence.md` · `report.md` · `bibliography.md` · `finalize.md` · `limits.md`, plus
-  the visualization brief, and `workflows/standard-research-notebook.md` holds the stage chain.
-- **Deterministic MCP tools** — eight `research_record_*` tools that mutate one canonical
-  `manifest.json` per experiment. Same inputs, same filesystem result; no LLM in the write path.
-- **Delegated visualization** — when figures help the objective, the parent hands the specialist
-  brief in `references/visualization-agent.md` to a general-purpose worker; the parent keeps
-  scientific acceptance and supplies `reviewed_by`.
-- **Dimensional checking** — numeric results are recorded with units in `quantities`; a wrong
-  dimension blocks `finalize`, an unconventional-but-legal unit only warns, and no value is ever
-  silently converted.
-- **Report generation** — `finalize` writes an editable `report.md`, `report.qmd` and a standalone
-  `report.tex`, plus a guaranteed fixed-layout `report.pdf` rendered by pinned ReportLab.
-  Math (`$...$`, `$$...$$`) renders offline via matplotlib mathtext, so no TeX install is required;
-  `report.tex` is for readers who do have one.
+- **Record skill, not a manual** — `SKILL.md` is a 3 508-character entry point that routes one
+  lifecycle stage at a time into `references/`. An agent mid-task loads `start` → `evidence` →
+  `report` → `finalize`, never the whole tree. The stage chain also exists as a workflow:
+  [`workflows/standard-research-notebook.md`](workflows/standard-research-notebook.md).
+- **Deterministic tools** — same inputs, same filesystem result. Each call validates before and after,
+  publishes the manifest atomically, and keeps every prior revision.
+- **Dimensional checking** — numeric results are recorded with units in `quantities`; a wrong dimension
+  blocks `finalize`, a legal-but-unconventional unit is reported as a convention difference, and **no
+  value is ever converted or rewritten**.
+- **Delegated visualization** — when figures help the objective, the parent hands the specialist brief
+  in `references/visualization-agent.md` to a general-purpose worker and keeps scientific acceptance,
+  supplying `reviewed_by` itself.
+- **Reports that survive the tool** — `finalize` writes `report.md` (authority), `report.qmd`,
+  `report.tex`, and a ReportLab PDF. Math renders offline through matplotlib mathtext, so no TeX
+  install is required; `report.tex` is for readers who have one.
 
 ## On-disk layout
 
 Everything lives under the chosen `workspace_dir`. `manifest.json` is canonical; `record.md` is a
-generated readable view; `notes.md` is for hand-written human notes.
+generated view; `notes.md` is yours.
 
 ```
 workspace_dir/
@@ -35,60 +61,93 @@ workspace_dir/
 │   ├── index.md                 # generated catalog (manifests are authoritative)
 │   ├── manifest.schema.json     # written on first init
 │   └── experiments/exp-<32hex>/
-│       ├── manifest.json        # canonical state (immutable history in revisions/)
+│       ├── manifest.json        # canonical state
 │       ├── record.md            # generated view
 │       ├── notes.md             # editable human notes
 │       ├── scripts/  figures/  data/  reports/  revisions/
-│       ├── report.md  report.qmd  report.pdf   # written by finalize
-│       └── revisions/NNNNNN-<uuid>.json         # prior manifests
+│       ├── report.md  report.qmd  report.tex  report.pdf   # written by finalize
+│       └── revisions/NNNNNN-<uuid>.json                    # prior manifests, immutable
 └── levin_scratch/<task_id>/<agent_id>/          # transient work; never holds raw evidence
 ```
 
-## MCP tools
+## The eight tools, in one line each
 
-- `research_record_init` — create or resume an experiment by stable `task_id`; allocate scratch.
-- `research_record_checkpoint` — append a method/observation/failure/conclusion/resume note.
-- `research_record_register_artifact` — reference a file (raw/input/derived/script/figure/log/table)
-  without copying; bounded SHA-256, figures require `input_ids`/`script_id`/`run_id`.
-- `research_record_register_run` — record execution provenance (local/levin/slurm/external),
-  command, environment, seeds, inputs, outputs; update an existing run by `run.id`.
-- `research_record_validate` — read-only schema, reference, local-file and bounded integrity check.
-- `research_record_finalize` — validate terminal status + visualization assessment, emit report
-  sources and fixed-layout PDF; check `finalized`, `report.render_state`, `validation` (not `ok` alone).
-- `research_record_prune_reports` — delete old PDF snapshot folders to reclaim disk; keeps the
-  newest successful report, never touches `revisions/` or artifacts, `dry_run` lists first.
-- `research_record_index` — search manifests by title/objective/ID with offset/limit paging.
+Intent only — argument schemas live in [`mcp/runner/plugin_spec.py`](mcp/runner/plugin_spec.py), which
+is the authority and is not restated here.
 
-## Filesystem-as-source-of-truth guarantees
+| Tool | Owns |
+|---|---|
+| `research_record_init` | create or resume an experiment by stable `task_id`; allocate per-agent scratch |
+| `research_record_checkpoint` | append a method / observation / failure / conclusion / resume / note entry |
+| `research_record_register_artifact` | reference a file by role without copying; bounded SHA-256 and figure provenance |
+| `research_record_register_run` | execution provenance — backend, host, command, environment, seeds, inputs, outputs |
+| `research_record_validate` | read-only structural check **plus** every gate `finalize` will apply |
+| `research_record_finalize` | emit report sources and the PDF; commit terminal status only if the gates pass |
+| `research_record_prune_reports` | delete old PDF snapshot folders on explicit request; `dry_run` lists first |
+| `research_record_index` | search records by term, with optional per-record counts |
 
-- No database, web service, scheduler, telemetry, model download, or external process.
-- Never overwrites original data — raw/input files are referenced, never copied or rewritten.
-- External references (e.g. `s3://…`) are **never fetched**; they stay `external_unverified`.
-- No automatic deletion — scratch, old revisions, and failed records persist for inspection.
-- Symlinked managed roots/output paths are rejected, and any managed path escaping the workspace
-  is rejected before a write. (Not a sandbox against a racing malicious process.)
-- Bounded work: manifest ≤ 2 MB and ≤ 500 artifacts/runs/checkpoints; ≤ 64 MiB hashed per
-  registration and ≤ 64 MiB total per validation (a supplied digest stays `supplied_unverified`);
-  report ≤ 200 000 characters, 20 figures, 500 pages. Larger inputs are referenced, not absorbed.
-- Local file locks serialize metadata mutations; canonical manifest is published atomically and
-  prior revisions are immutable (NFS/distributed locking guarantees are not claimed).
+## Guarantees the code enforces
 
-## Running tests and the demo
+Most of these are a rejection in [`mcp/runner/notebook.py`](mcp/runner/notebook.py) rather than a
+convention; the renderer's no-network property is an absence of code, asserted by a test that patches
+`urlopen` and `os.system`.
 
-Use the plugin's uv virtualenv (created by the runtime; paths below assume the plugin directory
-is the working directory). The demo resolves its own `mcp/runner` path, so it needs no `PYTHONPATH`.
+- Never overwrites original data — `raw`/`input` files are referenced and hashed in place; a changed
+  raw file is rejected rather than silently re-registered.
+- Never fetches an external reference — `ssh://`, `s3://`, `https://` stay `external_unverified`.
+- Never deletes automatically — scratch, old revisions and failed records persist; only an explicit
+  `prune_reports` removes report snapshots, and it always keeps one.
+- Never writes outside the workspace, and rejects any symlink on a managed path.
+- Bounded work: manifest ≤ 2 MB, ≤ 500 artifacts/runs/checkpoints, ≤ 64 MiB hashed per registration,
+  ≤ 64 MiB total per validation; report ≤ 200 000 characters, 20 figures, 500 pages. Larger inputs are
+  referenced, not absorbed.
+- Local file locks serialize mutations; the manifest is published atomically and prior revisions are
+  immutable (`revisions/NNNNNN-*.json` is never rewritten). NFS/distributed locking is not claimed.
 
-```bash
-# Automated regression + offline reporting tests
-levin_scratch/.venv/bin/python -m unittest discover -s tests -v
+## Deployment
 
-# Representative end-to-end workflow (synthetic Euler-vs-analytic decay) in a scratch workspace
-levin_scratch/.venv/bin/python examples/computational_demo.py --workspace /tmp/notebook-demo
-```
+Plugin id `levin-research-notebook`; logical MCP alias `server_name: "levin-research-notebook__runner"`;
+one enabled physical deployment, `levin-research-notebook__runner__local`. v0.x is **local-only** —
+the manifest declares `remoteSsh.supported: false`, and that is a deliberate refusal, not an untested
+feature. Point `workspace_dir` at the real local workspace, never a transient remote staging copy, and
+record HPC/Slurm data as external references.
+
+## Limitations, honestly
+
+- **Local-only**, as above. Remote SSH transfer is unsupported.
+- **Font coverage is platform-shaped.** macOS is the executed path; the Linux and Windows candidate
+  chains have never run on a real host. A machine with no CJK face prints `[U+XXXX]` and says so in
+  `preflight.fonts.cjk_available` — see [docs/limitations.md](docs/limitations.md).
+- **The renderer is a layout, not a typesetter.** Tables become a grid and long cells are truncated
+  with `…` (the full text stays in `record.md`); a pipe line without a `| --- |` separator prints
+  literally; one-line `$$ … $$` renders as a raster image and is not searchable; a multi-line `$$`
+  block is not recognised. Quarto/Typst are not installed.
+- **No automatic task-lifecycle hook and no installable subagent type** — both are skill-driven,
+  invoked through the existing `Agent` tool with `general-purpose` workers.
+- **`ok` is not completion.** Read `finalized`, `report.render_state` and `validation`; a blocked
+  attempt leaves a source-only folder with no PDF.
+- **Structure is not science.** Schema validity and matching checksums prove identity and consistency.
+  They never prove a conclusion correct or independently reproducible.
+
+The full accounting — what has never been executed, what the test suite hides, what the record model
+cannot express — is [docs/limitations.md](docs/limitations.md).
+
+## Where to read what
+
+| Question | Page |
+|---|---|
+| Is this the right tool instead of an ELN? | [docs/why-not-an-eln.md](docs/why-not-an-eln.md) |
+| How do I actually run a task through it? | [docs/lifecycle.md](docs/lifecycle.md) |
+| Where does this field come from, and will it print? | [docs/manifest-and-report.md](docs/manifest-and-report.md) |
+| Which file do I change? | [docs/architecture.md](docs/architecture.md) |
+| What does not work? | [docs/limitations.md](docs/limitations.md) |
+| Tests, release, doc rules | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| What changed between versions | [CHANGELOG.md](CHANGELOG.md) |
+| What an agent should do at this stage | [`skills/levin-research-notebook-runtime/SKILL.md`](skills/levin-research-notebook-runtime/SKILL.md) |
 
 ## Building with the Creator CLI
 
-From the Creator skill directory, with `<plugin-source>` pointing at this plugin folder:
+Run from the Creator skill directory, with `<plugin-source>` pointing at this folder:
 
 ```bash
 node scripts/levin-plugin-creator.cjs compile <plugin-source>
@@ -97,21 +156,7 @@ node scripts/levin-plugin-creator.cjs contract-test <plugin-source>
 node scripts/levin-plugin-creator.cjs package <plugin-source>
 ```
 
-## Deployment
-
-Plugin id: `levin-research-notebook`. Logical MCP alias: `server_name: "levin-research-notebook__runner"`;
-the one enabled physical deployment is `levin-research-notebook__runner__local`. v0.x is local-only:
-there is **no Remote SSH transfer support** (runtime `remoteSsh: false`). Point `workspace_dir` at the
-real local workspace — never a transient remote staging copy — and record HPC/Slurm data as external
-references rather than notebook writes.
-
-## Limitations (honest)
-
-- Local-only in v0.x; Remote SSH transfer is unsupported, not merely untested.
-- Quarto and Typst are optional and are **not** installed; the guaranteed output is the ReportLab
-  fixed-layout PDF. Edit `report.qmd` yourself and register any external render as an artifact.
-- Markdown tables and complex math render as **literal text** in the PDF; real typesetting needs Quarto.
-- No automatic task-lifecycle hook and no installable subagent type — both are skill-driven, invoked
-  through the existing `Agent` tool with `general-purpose` workers.
-- Schema validity and matching checksums prove structure and identity only; they do **not** prove the
-  science is correct or independently reproducible.
+`validate` needs a clean tree: a stale `__pycache__` inside `.levin-plugin/vendor/` fails the vendored
+SDK file-set check, and `compile` is the fix. `contract-test` runs the real MCP server, so the pinned
+packages must be importable on `PATH`. Both failure modes are documented in
+[CONTRIBUTING.md](CONTRIBUTING.md#compile-validate-package).

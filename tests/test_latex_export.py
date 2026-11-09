@@ -1,7 +1,11 @@
 """LaTeX export and math rendering: the offline path that needs no TeX install."""
+import sys
 import unittest
 from pathlib import Path
 import tempfile
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "mcp" / "runner"))
 
 import latex_export
 import reporting

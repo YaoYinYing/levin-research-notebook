@@ -9,7 +9,7 @@ an explicit "not recorded" line rather than disappearing, so a gap is visible in
 |---|---|
 | Title + `***YYYY-MM-DD HH:MM:SS — YYYY-MM-DD HH:MM:SS***` | `title`, record timestamps |
 | Three-sentence summary + fact table | `objective` / `purpose` / `expected_result`, `implementer`, runs, `environment_location` |
-| 1. 实验目的 | `purpose` (fallback `hypothesis`) and objective |
+| 1. 实验目的 | `purpose` only; when it is empty the section prints 未记录研究问题。 (`hypothesis` feeds the header's 为什么要做 line instead) |
 | 2. 实验策略 | `strategy: [{title, text}]` → 2.1, 2.2 … |
 | 3. 实验方法和计划 | `method_plan` bullets, then method checkpoints as 3.1, 3.2 … |
 | 4. 实验材料 | hosts/arch, dataset and script artifacts, `materials`, software versions, non-default parameters |
@@ -77,10 +77,12 @@ are different dimensions on purpose.
 
 ## Math
 
-Inline `$E_a = 59.5\ \mathrm{kJ\,mol^{-1}}$` and display `$$ \Delta G = \Delta H - T\Delta S $$` render
-offline through matplotlib's mathtext: no TeX installation, nothing leaves the machine. An unparsable
-formula is shown as literal `$…$` text rather than dropped, so check the PDF when a formula looks odd.
-Math is rasterised and therefore not searchable in the text layer; the surrounding prose is.
+Inline `$E_a = 59.5\ \mathrm{kJ\,mol^{-1}}$` and a one-line display `$$ \Delta G = \Delta H - T\Delta S $$`
+render offline through matplotlib's mathtext: no TeX installation, nothing leaves the machine. An
+expression mathtext cannot render at all (empty, or plain broken) falls back to literal `$…$` text
+rather than being dropped. Math is rasterised and therefore not searchable in the text layer; the
+surrounding prose is. Put display math on **one** line — a multi-line `$$` block is not recognised and
+prints its `$` delimiters literally.
 
 ## Figures
 

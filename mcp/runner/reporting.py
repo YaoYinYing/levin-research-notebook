@@ -1120,9 +1120,13 @@ def render_report(markdown_text: str, output_path: Path, *, title: str,
             continue
         blank = False
         if stripped == "\\figures":
+            # Only what is still unplaced: an inline \figure earlier in the document has
+            # already been shown next to its claim, and repeating it here is noise.
             for number, (path, caption, artifact_id) in enumerate(prepared, 1):
+                if number in placed:
+                    continue
                 _place_figure(layout, canvas, path, caption, artifact_id, number)
-            placed.update(range(1, len(prepared) + 1))
+                placed.add(number)
             index += 1
             continue
         single = re.fullmatch(r"\\figure\{([^{}]+)\}", stripped)

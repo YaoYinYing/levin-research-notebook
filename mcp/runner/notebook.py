@@ -378,6 +378,7 @@ class Notebook:
     def register_artifact(self,eid,artifact,request_id=None):
         allowed={'role','location','description','input_ids','script_id','run_id','sha256','conditions','source_origin','remote_host','remote_path','remote_copy_permission','reference_id'}
         if set(artifact)-allowed: raise NotebookError('Unknown artifact metadata fields')
+        artifact=dict(artifact)   # never mutate the caller's object; a replay must fingerprint identically
         reference_id=artifact.get('reference_id')
         if reference_id is not None: text(reference_id,'reference_id',limit=60)
         source_origin=artifact.get('source_origin','unspecified')
@@ -448,6 +449,17 @@ class Notebook:
                     raise NotebookError('Figures require input_ids and script_id (or a run that declares them): '
                                         f'run {run["id"]} declares {len(run.get("input_ids",[]))} input(s). '
                                         'Register the script artifact, then register or update the run with its inputs.')
+            # Store canonical ids, never the alias the caller happened to pass: accepting an
+            # alias at registration but persisting it verbatim produced records that were
+            # valid on write and invalid at validate.
+            artifact['input_ids']=[_resolve_artifact(ref,known)['id'] if _resolve_artifact(ref,known) else ref
+                                   for ref in artifact.get('input_ids',[])]
+            if artifact.get('script_id'):
+                script=_resolve_artifact(str(artifact['script_id']),known)
+                if script is not None: artifact['script_id']=script['id']
+            if artifact.get('run_id'):
+                run=_resolve_run(str(artifact['run_id']),m['runs'])
+                if run is not None: artifact['run_id']=run['id']
             existing=None
             for old in m['artifacts']:
                 if old['location']==location and old['role']==artifact['role']:
@@ -455,7 +467,9 @@ class Notebook:
                     existing=old
             if existing is not None and (existing['role'] != 'raw' or not existing['sha256'] or existing['sha256'] == sha):
                 existing.update(sha256=sha,checksum_origin=origin,size_bytes=size,availability=availability,
-                                source_origin=source_origin,remote_host=remote_host,remote_path=remote_path,remote_copy_permission=permission,reference_id=reference_id,
+                                source_origin=source_origin,remote_host=remote_host,remote_path=remote_path,remote_copy_permission=permission,
+                                # omit means keep: a refresh must not silently erase the alias
+                                reference_id=reference_id if reference_id is not None else existing.get('reference_id'),
                                 description=artifact.get('description',existing['description']),
                                 input_ids=artifact.get('input_ids',existing['input_ids']),
                                 script_id=artifact.get('script_id',existing['script_id']),
@@ -507,6 +521,8 @@ class Notebook:
                                     f'Known runs: {_sample_ids({r["id"]:r for r in m["runs"]})}')
             ref_id=run.get('reference_id')
             if ref_id is not None: text(ref_id,'reference_id',limit=60)
+            # omit means keep, exactly as for artifacts
+            ref_id=ref_id if ref_id is not None else (existing.get('reference_id') if existing else None)
             r=dict(id=existing['id'] if existing else uid('run'),created_at=existing['created_at'] if existing else now(),backend=run['backend'],host=host,reference_id=ref_id,external_id=run.get('external_id',''),execution_status=run['execution_status'],command=run['command'],parameters=run.get('parameters',{}),environment=run['environment'],input_ids=resolved_io['input_ids'],output_ids=resolved_io['output_ids'],failure=run.get('failure',''))
             if existing: m['runs'][m['runs'].index(existing)]=r
             else: m['runs'].append(r)
@@ -1200,6 +1216,22 @@ class Notebook:
         return out
 
     @staticmethod
+    def _sec_notes(m):
+        """Recovery and side notes. Kept out of the numbered method list on purpose:
+        a resume is not a method, and a note is not a result."""
+        entries=[c for c in m['checkpoints'] if c['kind'] in ('resume','note')]
+        if not entries: return []
+        out=['']
+        for c in entries:
+            label=c.get('title') or ('续做记录' if c['kind']=='resume' else '备注')
+            marker='**续做**' if c['kind']=='resume' else '**备注**'
+            out += [f'- {marker}｜{label}：{c["text"]}']
+            if c.get('when_note'): out += [f'  > {c["when_note"]}']
+            if c['evidence_ids']: out += ['  证据：'+', '.join('`'+e+'`' for e in c['evidence_ids'])]
+        out.append('')
+        return out
+
+    @staticmethod
     def _sec_extra(m):
         out=[]
         for index, entry in enumerate(m.get('extra_sections') or [],1):
@@ -1244,6 +1276,8 @@ class Notebook:
               ('下一步计划', lambda x: Notebook._sec_bullets(x.get('plans'), '暂无后续计划。')),
               ('经验教训', lambda x: Notebook._sec_bullets(x.get('lessons'), '未记录。')),
               ('数据空间统计', Notebook._sec_space)]
+        if any(c['kind'] in ('resume','note') for c in m['checkpoints']):
+            tail.append(('恢复与备注', Notebook._sec_notes))
         ordered=middle+([extra] if extra else [])+tail
         return ordered
 

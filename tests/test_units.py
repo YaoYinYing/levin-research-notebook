@@ -1,5 +1,10 @@
 """Dimensional checking: what it must catch, and what it must not invent."""
+import sys
 import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "mcp" / "runner"))
 
 import units
 

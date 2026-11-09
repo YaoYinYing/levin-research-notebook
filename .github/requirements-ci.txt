@@ -1,0 +1,26 @@
+# CI dependency set. NOT a package manifest — this repository ships as a Levin
+# plugin (.levin-plugin.tgz), not as a Python distribution.
+#
+# Zone 1 (below) mirrors mcp/runner/plugin_spec.py `PythonRuntime.packages`
+# verbatim, in the same order. pip/uv cannot read pins out of a Python tuple, so
+# the list is duplicated here; .github/scripts/check_requirements.py parses the
+# tuple with ast and fails the build when the two drift apart.
+jsonschema==4.23.0
+filelock==3.16.1
+reportlab==4.2.5
+matplotlib==3.9.4
+bibtexparser==2.1.0
+# --- end of runtime pins ---
+#
+# Zone 2: what the *tests* need on top of the runtime pins.
+#
+# pypdf: tests/test_notebook.py imports it unconditionally (PDF page count plus
+#   the tamper-detection assertion) and tests/test_reporting.py uses it in
+#   reader(). It is NOT a runtime dependency of the plugin, so it is deliberately
+#   absent from plugin_spec.py. Without it the run ends 155 tests + 1 error.
+pypdf==7.0.0
+#
+# pillow: tests/test_reporting.py imports PIL directly to synthesize fixture
+#   images. It also arrives transitively via matplotlib/reportlab, but a direct
+#   import should not rely on another package's dependency graph.
+pillow==11.0.0
