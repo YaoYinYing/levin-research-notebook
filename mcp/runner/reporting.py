@@ -1,0 +1,1035 @@
+"""Bounded, offline, fixed-layout PDF rendering; Markdown is treated as data.
+
+A4 pages use embedded TrueType fonts, with optional local CJK fallback. Missing
+characters are rendered visibly as [U+XXXX] and listed in the return value.
+No HTML, Markdown links, scripts, or remote images are evaluated. The caller
+owns figure registration/verification, immutable staging, and source retention.
+"""
+from __future__ import annotations
+
+from functools import lru_cache
+from io import BytesIO
+from pathlib import Path
+import re
+import threading
+import unicodedata
+
+import reportlab
+from PIL import Image, ImageOps
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont, TTFError
+from reportlab.pdfgen.canvas import Canvas
+
+MAX_TEXT_CHARS = 200_000
+MAX_FIGURES = 20
+MAX_PAGES = 500
+MAX_IMAGE_BYTES = 25 * 1024 * 1024
+MAX_IMAGE_PIXELS = 40_000_000
+_FONT_LOCK = threading.Lock()
+_CJK_CANDIDATES = (
+    ("/System/Library/Fonts/STHeiti Light.ttc", 1),
+    ("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 0),
+    ("/usr/share/fonts/truetype/arphic/uming.ttc", 0),
+    ("C:/Windows/Fonts/msyh.ttc", 0),
+)
+
+
+# Body: Songti (宋体) CJK + Times New Roman Latin. Headings/bold: Heiti (黑体) + Times New Roman Bold.
+LATIN = {"r": "NotebookTimes", "b": "NotebookTimesBold", "i": "NotebookTimesItalic",
+         "bi": "NotebookTimesBoldItalic", "m": "NotebookMono", "mb": "NotebookMonoBold",
+         "mi": "NotebookMonoItalic"}
+_MONO = (("/System/Library/Fonts/Menlo.ttc", 0), ("/System/Library/Fonts/Monaco.ttf", None))
+CJK = {"r": "NotebookSongti", "b": "NotebookHeiti", "i": "NotebookSongti", "bi": "NotebookHeiti"}
+_TIMES_DIR = Path("/System/Library/Fonts/Supplemental")
+_TIMES = (("NotebookTimes", "Times New Roman.ttf"), ("NotebookTimesBold", "Times New Roman Bold.ttf"),
+          ("NotebookTimesItalic", "Times New Roman Italic.ttf"),
+          ("NotebookTimesBoldItalic", "Times New Roman Bold Italic.ttf"))
+_SONGTI = (("/System/Library/Fonts/Supplemental/Songti.ttc", 3), ("/System/Library/Fonts/Supplemental/Songti.ttc", 4))
+_HEITI = (("/System/Library/Fonts/STHeiti Medium.ttc", 1), ("/System/Library/Fonts/STHeiti Light.ttc", 1))
+FONTS = {**LATIN, "songti": "NotebookSongti", "heiti": "NotebookHeiti"}
+
+
+def _register(name: str, path: str, index: int | None = None) -> bool:
+    """Register one face; return False when the platform does not provide it."""
+    if name in pdfmetrics.getRegisteredFontNames():
+        return True
+    if not Path(path).is_file():
+        return False
+    try:
+        with _FONT_LOCK:
+            pdfmetrics.registerFont(TTFont(name, path, subfontIndex=index) if index is not None
+                                    else TTFont(name, path))
+        face = pdfmetrics.getFont(name).face
+        return bool(getattr(face, "charToGlyph", {}).get(ord("中")))
+    except Exception:
+        return False
+
+
+@lru_cache(maxsize=1)
+def _base_fonts() -> tuple[str, str]:
+    """Latin serif (Times New Roman) plus the CJK faces; falls back to bundled Vera."""
+    for name, filename in _TIMES:
+        _register(name, str(_TIMES_DIR / filename))
+    for name, candidates in (("NotebookSongti", _SONGTI), ("NotebookHeiti", _HEITI)):
+        if not any(_register(name, path, index) for path, index in candidates):
+            _register(name, "/System/Library/Fonts/STHeiti Light.ttc", 1)
+    path, index = _MONO[0]
+    if not _register("NotebookMono", path, index):
+        if not any(_register("NotebookMono", p, i) for p, i in _MONO):
+            FONTS.update({"m": "Courier", "mb": "Courier-Bold", "mi": "Courier-Oblique"})
+    _register("NotebookMonoBold", "/System/Library/Fonts/Menlo.ttc", 1)
+    _register("NotebookMonoItalic", "/System/Library/Fonts/Menlo.ttc", 2)
+    registered = set(pdfmetrics.getRegisteredFontNames())
+    if "NotebookMonoBold" not in registered: FONTS["mb"] = FONTS["m"]
+    if "NotebookMonoItalic" not in registered: FONTS["mi"] = FONTS["m"]
+    directory = Path(reportlab.__file__).parent / "fonts"
+    for name, filename in (("NotebookVera", "Vera.ttf"), ("NotebookVeraBold", "VeraBd.ttf"),
+                           ("NotebookVeraIt", "VeraIt.ttf"), ("NotebookVeraBI", "VeraBI.ttf")):
+        _register(name, str(directory / filename))
+    registered = set(pdfmetrics.getRegisteredFontNames())
+    if "NotebookTimes" not in registered:
+        FONTS.update({"r": "NotebookVera", "b": "NotebookVeraBold",
+                      "i": "NotebookVeraIt", "bi": "NotebookVeraBI"})
+    if "NotebookSongti" not in registered:
+        FONTS["songti"] = FONTS.get("r", "NotebookVera")
+    if "NotebookHeiti" not in registered:
+        FONTS["heiti"] = FONTS.get("b", "NotebookVeraBold")
+    return FONTS["r"], FONTS["b"]
+
+
+@lru_cache(maxsize=1)
+def _cjk_fonts() -> tuple[str, ...]:
+    names = []
+    with _FONT_LOCK:
+        for index, (filename, subfont) in enumerate(_CJK_CANDIDATES):
+            if not Path(filename).is_file():
+                continue
+            name = f"NotebookCJK{index}"
+            try:
+                if name not in pdfmetrics.getRegisteredFontNames():
+                    pdfmetrics.registerFont(TTFont(name, filename, subfontIndex=subfont))
+            except (TTFError, OSError):
+                # An optional font may use unsupported PostScript outlines.
+                continue
+            names.append(name)
+    return tuple(names)
+
+
+_KEYWORDS = {
+    "python": {"def", "class", "return", "if", "elif", "else", "for", "while", "in", "not", "and",
+               "or", "import", "from", "as", "with", "try", "except", "finally", "raise", "yield",
+               "lambda", "None", "True", "False", "async", "await", "pass", "break", "continue",
+               "global", "nonlocal", "assert", "del", "is"},
+    "bash": {"if", "then", "else", "elif", "fi", "for", "in", "do", "done", "while", "case", "esac",
+             "function", "export", "local", "return", "echo", "cd", "source", "set", "unset"},
+    "json": {"true", "false", "null"},
+    "yaml": {"true", "false", "null", "yes", "no"},
+    "text": set(),
+}
+_COMMENT = {"python": "#", "bash": "#", "yaml": "#", "json": None, "text": None, "shell": "#"}
+_TOKEN = re.compile(r"""(?P<string>"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|(?P<number>\b\d+(?:\.\d+)?\b)|(?P<word>[A-Za-z_][A-Za-z0-9_]*)""")
+COLORS = {"plain": (0.12, 0.12, 0.12), "comment": (0.45, 0.47, 0.5), "string": (0.64, 0.11, 0.11),
+          "keyword": (0.0, 0.0, 0.72), "number": (0.04, 0.45, 0.3)}
+
+
+def _tokenize(line: str, language: str):
+    """Very small highlighter: comments, strings, numbers and keywords. Unknown text stays plain."""
+    lang = (language or "text").strip().lower()
+    lang = {"py": "python", "sh": "bash", "shell": "bash", "yml": "yaml", "js": "json"}.get(lang, lang)
+    marker = _COMMENT.get(lang)
+    cut = len(line)
+    if marker:
+        quote = None
+        for position, character in enumerate(line):
+            if quote:
+                if character == quote: quote = None
+            elif character in "\"'":
+                quote = character
+            elif line.startswith(marker, position):
+                cut = position
+                break
+    body, tail = line[:cut], line[cut:]
+    keywords = _KEYWORDS.get(lang, set())
+    tokens, last = [], 0
+    for match in _TOKEN.finditer(body):
+        if match.start() > last:
+            tokens.append((body[last:match.start()], "plain"))
+        kind = "string" if match.group("string") else "number" if match.group("number") else (
+            "keyword" if match.group("word") in keywords else "plain")
+        tokens.append((match.group(0), kind))
+        last = match.end()
+    if last < len(body):
+        tokens.append((body[last:], "plain"))
+    if tail:
+        tokens.append((tail, "comment"))
+    return tokens or [("", "plain")]
+
+
+def _is_cjk(character: str) -> bool:
+    code = ord(character)
+    return (0x2E80 <= code <= 0x9FFF or 0xF900 <= code <= 0xFAFF or 0xFF00 <= code <= 0xFFEF
+            or 0x3000 <= code <= 0x303F)
+
+
+def _supports(font: str, character: str) -> bool:
+    """True when this font can draw the character. Standard PDF fonts have no glyph table."""
+    try:
+        face = pdfmetrics.getFont(font).face
+    except Exception:
+        return False
+    glyphs = getattr(face, "charToGlyph", None)
+    if glyphs is None:                      # built-in Type1 (Courier, Helvetica): Latin-1 only
+        return ord(character) < 256
+    return bool(glyphs.get(ord(character)))
+
+
+class _Layout:
+    def __init__(self, canvas: Canvas):
+        self.canvas = canvas
+        self.regular, self.bold = _base_fonts()
+        self.width, self.height = A4
+        self.margin = 48.0
+        self.usable = self.width - 2 * self.margin
+        self.y = self.height - self.margin
+        self.page = 1
+        self.drawn = False
+        self.unsupported: set[int] = set()
+        self.transliterated: set[int] = set()   # rendered as caret notation, not missing
+        self.glyph_cache: dict[tuple[str, bool], tuple[str, str]] = {}
+        self.width_cache: dict[tuple[str, str, float], float] = {}
+
+    def _footer(self) -> None:
+        """Page number in the CJK body face: Times has no CJK glyphs and would emit .notdef."""
+        self.canvas.setFont(FONTS.get("songti", self.regular), 8)
+        self.canvas.setFillGray(0.45)
+        self.canvas.drawRightString(self.width - self.margin, 25, f"第 {self.page} 页")
+        self.canvas.setFillGray(0)
+
+    def need(self, height: float) -> None:
+        if height > self.height - 2 * self.margin:
+            raise ValueError("A report block exceeds the printable page height")
+        if self.y - height >= self.margin:
+            return
+        if self.page >= MAX_PAGES:
+            raise ValueError(f"Report exceeds {MAX_PAGES} pages")
+        self._footer()
+        self.canvas.showPage()
+        self.page += 1
+        self.y = self.height - self.margin
+        self.drawn = False
+
+    def new_page(self) -> None:
+        if self.page >= MAX_PAGES:
+            raise ValueError(f"Report exceeds {MAX_PAGES} pages")
+        self._footer()
+        self.canvas.showPage()
+        self.page += 1
+        self.y = self.height - self.margin
+        self.drawn = False
+
+    def glyph(self, character: str, bold: bool) -> tuple[str, str]:
+        key = (character, bold)
+        if key not in self.glyph_cache:
+            base = self.bold if bold else self.regular
+            # Invisible format/control characters are explicit, not hidden.
+            if unicodedata.category(character).startswith("C"):
+                font = None
+            elif _supports(base, character):
+                font = base
+            else:
+                font = next((candidate for candidate in _cjk_fonts()
+                             if _supports(candidate, character)), None)
+            if font is None:
+                replacement = self._substitute(character)
+                if replacement != character:
+                    self.transliterated.add(ord(character))
+                    shown = replacement
+                else:
+                    self.unsupported.add(ord(character))
+                    shown = f"[U+{ord(character):04X}]"
+                self.glyph_cache[key] = (base, shown)
+            else:
+                self.glyph_cache[key] = (font, character)
+        return self.glyph_cache[key]
+
+    def lines(self, text: str, size: float, bold: bool):
+        """Greedy character wrapping with word breaks; no quadratic long lines."""
+        line: list[tuple[str, str, float]] = []
+        width = 0.0
+        for character in text.expandtabs(4):
+            font, display = self.glyph(character, bold)
+            key = (font, display, size)
+            if key not in self.width_cache:
+                self.width_cache[key] = pdfmetrics.stringWidth(display, font, size)
+            atom_width = self.width_cache[key]
+            if line and width + atom_width > self.usable:
+                split = next((i + 1 for i in range(len(line) - 1, -1, -1)
+                              if line[i][1].isspace()), len(line))
+                yield line[:split]
+                line = line[split:]
+                width = sum(atom[2] for atom in line)
+                # A prefix moved after a word break may itself fill the line.
+                if line and width + atom_width > self.usable:
+                    yield line
+                    line, width = [], 0.0
+            line.append((font, display, atom_width))
+            width += atom_width
+        if line:
+            yield line
+
+    def text(self, text: str, *, size: float = 10, bold: bool = False,
+             after: float = 5) -> None:
+        leading = size * 1.4
+        for line in self.lines(text, size, bold):
+            self.need(leading)
+            self.y -= leading
+            x = self.margin
+            # Draw contiguous same-font runs for searchable/extractable text.
+            run_font, run_text, run_width = None, [], 0.0
+            for font, display, atom_width in line + [(None, "", 0)]:
+                if font != run_font and run_text:
+                    self.canvas.setFont(run_font, size)
+                    self.canvas.drawString(x, self.y, "".join(run_text))
+                    x += run_width
+                    run_text, run_width = [], 0.0
+                run_font = font
+                run_text.append(display)
+                run_width += atom_width
+        self.y -= after
+        self.drawn = True
+
+    def _substitute(self, text: str) -> str:
+        """Rewrite scripts as caret notation when the fonts cannot draw them."""
+        import re as _re
+        sub = {"₀": "0", "₁": "1", "₂": "2", "₃": "3", "₄": "4", "₅": "5",
+               "₆": "6", "₇": "7", "₈": "8", "₉": "9", "₊": "+", "₋": "-"}
+        sup = {"⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4", "⁵": "5",
+               "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9", "⁺": "+", "⁻": "-"}
+
+        def caret(match: "_re.Match[str]") -> str:
+            return "^" + "".join(sup[c] for c in match.group(0))
+
+        def under(match: "_re.Match[str]") -> str:
+            return "_" + "".join(sub[c] for c in match.group(0))
+
+        text = _re.sub("[" + "".join(sup) + "]+", caret, text)
+        return _re.sub("[" + "".join(sub) + "]+", under, text)
+
+    def _styled(self, character: str, style: str) -> tuple[str, str]:
+        key = (character, style)
+        cached = self.glyph_cache.get(key)
+        if cached is not None:
+            return cached
+        key_style = "b" if "b" in style else "r"
+        if unicodedata.category(character).startswith("C"):
+            font = None
+        elif _is_cjk(character):
+            font = FONTS["heiti"] if key_style == "b" else FONTS["songti"]
+            if not _supports(font, character):
+                font = next((c for c in _cjk_fonts() if _supports(c, character)), None)
+        else:
+            font = FONTS.get(key_style, FONTS["r"])
+            if not _supports(font, character):
+                font = next((c for c in _cjk_fonts() if _supports(c, character)), None)
+        if font is None:
+            fallback = FONTS.get(key_style, FONTS["r"])
+            replacement = self._substitute(character)
+            if replacement != character:
+                self.transliterated.add(ord(character))
+                shown = replacement
+            else:
+                self.unsupported.add(ord(character))
+                shown = f"[U+{ord(character):04X}]"
+            self.glyph_cache[key] = (fallback, shown)
+        else:
+            self.glyph_cache[key] = (font, character)
+        return self.glyph_cache[key]
+
+    def _atoms_raw(self, text: str, size: float, indent: float):
+        """Same greedy wrap, but the text is literal: no inline Markdown parsing."""
+        atoms = []
+        for character in text.expandtabs(4):
+            font, display = self._styled(character, "m")
+            key = (font, display, size)
+            if key not in self.width_cache:
+                self.width_cache[key] = pdfmetrics.stringWidth(display, font, size)
+            atoms.append((font, display, self.width_cache[key], "m"))
+        usable = self.usable - indent
+        line, width, lines = [], 0.0, []
+        for atom in atoms:
+            if line and width + atom[2] > usable:
+                lines.append(line)
+                line, width = [], 0.0
+            line.append(atom)
+            width += atom[2]
+        if line:
+            lines.append(line)
+        return lines
+
+    def measure(self, text: str, size: float, style: str = "r") -> float:
+        total = 0.0
+        for character in _plain(text):
+            font, display = self._styled(character, style)
+            key = (font, display, size)
+            if key not in self.width_cache:
+                self.width_cache[key] = pdfmetrics.stringWidth(display, font, size)
+            total += self.width_cache[key]
+        return total
+
+    def _atoms(self, text: str, size: float, indent: float, force_bold: bool = False):
+        """Split styled text into atoms and greedily wrap them into lines."""
+        atoms = []
+        for chunk, style in _parse_inline(text):
+            if style == "math":
+                try:
+                    _png, width_pt, _height_pt, _depth_pt = math_image(chunk, size, force_bold)
+                except Exception:
+                    # Unrenderable TeX is shown literally rather than dropped silently.
+                    for character in ("$" + chunk + "$"):
+                        font, display = self._styled(character, "r")
+                        key = (font, display, size)
+                        self.width_cache.setdefault(key, pdfmetrics.stringWidth(display, font, size))
+                        atoms.append((font, display, self.width_cache[key], "r"))
+                    continue
+                atoms.append((None, chunk, width_pt, "math"))
+                continue
+            if force_bold and style == "r":
+                style = "b"
+            scale = 0.72 if style == "sup" else 1.0
+            for character in chunk.expandtabs(4):
+                font, display = self._styled(character, style)
+                key = (font, display, size)
+                if key not in self.width_cache:
+                    self.width_cache[key] = pdfmetrics.stringWidth(display, font, size)
+                atoms.append((font, display, self.width_cache[key] * scale, style))
+        usable = self.usable - indent
+        line, width, lines = [], 0.0, []
+        for atom in atoms:
+            if line and width + atom[2] > usable:
+                split = next((i + 1 for i in range(len(line) - 1, -1, -1) if line[i][1].isspace()), len(line))
+                lines.append(line[:split])
+                line = line[split:]
+                width = sum(item[2] for item in line)
+                if line and width + atom[2] > usable:
+                    lines.append(line)
+                    line, width = [], 0.0
+            line.append(atom)
+            width += atom[2]
+        if line:
+            lines.append(line)
+        return lines
+
+    def rich(self, text: str, *, size: float = 10, indent: float = 0, after: float = 6,
+             bold: bool = False) -> None:
+        """Draw styled runs: bold, italic, bold-italic, inline code, strike, underline."""
+        leading = size * 1.45
+        if text.strip():
+            self.drawn = True
+        for line in self._atoms(text, size, indent, force_bold=bold):
+            self.need(leading)
+            self.y -= leading
+            x = self.margin + indent
+            run_font, run_text, run_width, run_style = None, [], 0.0, None
+
+            def flush() -> None:
+                nonlocal x, run_font, run_text, run_width, run_style
+                # A run is only drawable when it carries both text and a resolved font;
+                # the sentinel atom and a just-drawn formula both leave it empty.
+                if not run_text or run_font is None:
+                    run_text, run_width = [], 0.0
+                    return
+                raise_by = size * 0.34 if (run_style or "") == "sup" else 0.0
+                self.canvas.setFont(run_font, size * 0.72 if (run_style or "") == "sup" else size)
+                self.canvas.drawString(x, self.y + raise_by, "".join(run_text))
+                if run_style and "u" in run_style:
+                    self.canvas.setLineWidth(0.6)
+                    self.canvas.line(x, self.y - 1.6, x + run_width, self.y - 1.6)
+                if run_style and "s" in run_style:
+                    self.canvas.setLineWidth(0.6)
+                    self.canvas.line(x, self.y + size * 0.32, x + run_width, self.y + size * 0.32)
+                x += run_width
+                run_text, run_width = [], 0.0
+
+            for font, display, atom_width, style in line + [(None, "", 0, None)]:
+                if font is None and style is None:
+                    continue                      # sentinel: only flushes the last run
+                if style == "math":
+                    # Flush the surrounding prose first, then stamp the rendered formula
+                    # on the same baseline so an inline expression reads as text.
+                    flush()
+                    run_font, run_style = font, style
+                    try:
+                        png, width_pt, height_pt, depth_pt = math_image(display, size, bold)
+                    except Exception:
+                        self.canvas.setFont(self.regular, size)
+                        self.canvas.drawString(x, self.y, "$" + display + "$")
+                        x += atom_width
+                        continue
+                    baseline = self.y - depth_pt + size * 0.22
+                    self.canvas.drawImage(ImageReader(BytesIO(png)), x, baseline,
+                                          width=width_pt, height=height_pt, mask="auto")
+                    x += width_pt
+                    continue
+                if (font, style) != (run_font, run_style):
+                    flush()
+                run_font, run_style = font, style
+                run_text.append(display)
+                run_width += atom_width
+            flush()
+        self.y -= after
+
+    def code_block(self, lines: list[str], *, size: float = 8.5, after: float = 8,
+                   language: str = "text") -> None:
+        leading = size * 1.35
+        padding = 5
+        body: list[list[tuple[str, str, float, str, str]]] = []
+        usable = self.usable - padding * 2
+        for raw in lines:
+            atoms: list[tuple[str, str, float, str, str]] = []
+            tokens = _tokenize(raw, language)
+            if not tokens:
+                body.append([])
+                continue
+            for chunk, kind in tokens:
+                for line_atoms in self._atoms_raw(chunk, size, 0):
+                    for font, display, width, _style in line_atoms:
+                        atoms.append((font, display, width, "m", kind))
+            current, used = [], 0.0
+            for atom in atoms:
+                if current and used + atom[2] > usable:
+                    body.append(current)
+                    current, used = [], 0.0
+                current.append(atom)
+                used += atom[2]
+            body.append(current)
+        per_page = max(1, int((self.height - 2 * self.margin - 2 * padding - leading) // leading))
+        self.drawn = True
+        while body:
+            chunk, body = body[:per_page], body[per_page:]
+            height = len(chunk) * leading + padding * 2
+            if self.y - height < self.margin:
+                self.new_page()
+            top = self.y
+            self.canvas.setFillGray(0.95)
+            self.canvas.rect(self.margin, top - height, self.usable, height, stroke=0, fill=1)
+            self.canvas.setFillGray(0)
+            self.y = top - padding
+            for line in chunk:
+                self.y -= leading
+                x = self.margin + padding
+                run_font, run_text, run_width, run_kind = None, [], 0.0, None
+                for font, display, atom_width, _style, kind in line + [(None, "", 0, None, None)]:
+                    if run_text and (font, kind) != (run_font, run_kind):
+                        self.canvas.setFont(run_font, size * (0.94 if run_kind == "comment" else 1.0))
+                        self.canvas.setFillColorRGB(*COLORS.get(run_kind, COLORS["plain"]))
+                        self.canvas.drawString(x, self.y, "".join(run_text))
+                        x += run_width
+                        run_text, run_width = [], 0.0
+                    run_font, run_kind = font, kind
+                    run_text.append(display)
+                    run_width += atom_width
+                self.canvas.setFillColorRGB(*COLORS["plain"])
+            self.y = top - height
+        self.y -= after
+
+    def table(self, header: list[str], rows: list[list[str]], *, size: float = 8.5) -> None:
+        """Fixed-layout grid: wrapped cells, per-run fonts, header repeated after a page break.
+
+        Wide tables shrink their type and truncate over-long cells; the full text stays in
+        record.md and in the bibliography line, so the grid stays readable.
+        """
+        columns = max([len(header)] + [len(r) for r in rows])
+        if columns == 0:
+            return
+        if columns > 9:
+            size = max(6.6, size * 0.72)
+        elif columns > 6:
+            size = max(7.2, size * 0.84)
+        limit = 90 if columns <= 6 else (60 if columns <= 9 else 42)
+
+        def clip(value: str) -> str:
+            plain = _plain(value)
+            if len(plain) <= limit:
+                return value
+            keep = value[:limit]
+            while keep and keep.count("`") % 2:
+                keep = keep[:-1]
+            if " " in keep:
+                keep = keep[:keep.rfind(" ")]
+            return keep.rstrip(" ,.;:") + "…"
+
+        header = [clip(cell) for cell in header]
+        rows = [[clip(cell) for cell in row] for row in rows]
+        header = header + [""] * (columns - len(header))
+        rows = [r + [""] * (columns - len(r)) for r in rows]
+        minimum = size * 6
+        natural = []
+        for index in range(columns):
+            head = self.measure(header[index], size, "b")
+            body = max([self.measure(row[index], size) for row in rows] or [0.0])
+            natural.append(max(head, body) + size * 2.6)
+        widths = [0.0] * columns
+        order = sorted(range(columns), key=lambda index: natural[index])
+        remaining = self.usable
+        pending = list(order)
+        while pending:
+            index = pending[0]
+            share = remaining / len(pending)
+            if natural[index] <= share:
+                widths[index] = natural[index]
+                remaining -= natural[index]
+                pending.pop(0)
+            else:
+                for other in pending:
+                    widths[other] = remaining / len(pending)
+                break
+        leading = size * 1.32
+        padding = 4.0
+
+        def wrap(cell: str, width: float, bold: bool = False):
+            out, current, used = [], [], 0.0
+            for atom in (a for line in self._atoms(cell, size, 0, force_bold=bold) for a in line):
+                if current and used + atom[2] > width - padding * 2:
+                    out.append(current)
+                    current, used = [], 0.0
+                current.append(atom)
+                used += atom[2]
+            if current:
+                out.append(current)
+            return out or [[]]
+
+        def height_of(cells, rows_style):
+            tallest = 1
+            for cell, width in zip(cells, widths):
+                tallest = max(tallest, len(wrap(cell, width, rows_style == "b")))
+            return tallest * leading + padding * 2
+
+        def draw(cells, y_top, bold_all):
+            x = self.margin
+            for cell, width in zip(cells, widths):
+                y = y_top - padding - leading
+                for line in wrap(cell, width, bold_all):
+                    cx = x + padding
+                    run_font, run_text, run_width = None, [], 0.0
+                    for font, display, atom_width, style in line:
+                        wanted = font
+                        if run_text and wanted != run_font:
+                            self.canvas.setFont(run_font, size)
+                            self.canvas.drawString(cx, y, "".join(run_text))
+                            cx += run_width
+                            run_text, run_width = [], 0.0
+                        run_font = wanted
+                        run_text.append(display)
+                        run_width += atom_width
+                    if run_text:
+                        self.canvas.setFont(run_font, size)
+                        self.canvas.drawString(cx, y, "".join(run_text))
+                    y -= leading
+                x += width
+            self.drawn = True
+
+        header_height = height_of(header, "b")
+        body_height = sum(height_of(row, "r") for row in rows)
+        self.drawn = True
+        if header_height + body_height <= self.height - 2 * self.margin and self.y - header_height - body_height < self.margin:
+            self.new_page()          # the table fits a page: keep it whole
+        else:
+            self.need(header_height + leading * 3)
+
+        def draw_header():
+            top = self.y
+            self.canvas.setFillGray(0.9)
+            self.canvas.rect(self.margin, top - header_height, sum(widths), header_height, stroke=0, fill=1)
+            self.canvas.setFillGray(0)
+            draw(header, top, True)
+            self.canvas.setLineWidth(0.5)
+            self.canvas.line(self.margin, top - header_height, self.margin + sum(widths), top - header_height)
+            self.y = top - header_height
+
+        draw_header()
+        for row in rows:
+            height = height_of(row, "r")
+            if self.y - height < self.margin:
+                self.new_page()
+                draw_header()
+                height = height_of(row, "r")
+            draw(row, self.y, False)
+            self.y -= height
+            self.canvas.setLineWidth(0.3)
+            self.canvas.line(self.margin, self.y, self.margin + sum(widths), self.y)
+        self.y -= 10
+
+    def rule(self) -> None:
+        self.need(18)
+        self.y -= 8
+        self.canvas.setLineWidth(0.8)
+        self.canvas.setStrokeGray(0.55)
+        self.canvas.line(self.margin, self.y, self.margin + self.usable, self.y)
+        self.canvas.setStrokeGray(0)
+        self.y -= 10
+        self.drawn = True
+
+    def page_break(self) -> None:
+        """Start a new page for the artifacts divider; skip it if the page is still empty."""
+        if self.drawn:
+            self.new_page()
+
+    def finish(self) -> int:
+        self._footer()
+        self.canvas.save()
+        return self.page
+
+
+# Inline math is recognised before other emphasis so `$a_1$` never eats the underscores.
+_INLINE = re.compile(
+    r"(?P<math>\$(?!\$)[^$\n]{1,400}\$)"
+    r"|(?P<footnote>\[\^[^\]]+\])"
+    r"|(?P<code>`[^`]+`)"
+    r"|(?P<bolditalic>\*\*\*[^*]+\*\*\*)"
+    r"|(?P<bold>\*\*[^*]+\*\*)"
+    r"|(?P<underline>__[^_]+__)"
+    r"|(?P<strike>~~[^~]+~~)"
+    r"|(?P<italic>(?<!\*)\*(?!\s)[^*]+?\*(?!\*))"
+)
+_STYLE_FLAGS = {"code": "m", "bolditalic": "bi", "bold": "b", "underline": "ru", "strike": "rs",
+                "italic": "i", "footnote": "sup", "math": "math"}
+
+
+def _parse_inline(text: str) -> list[tuple[str, str]]:
+    """Split one line into (text, style) runs. Style codes: r,b,i,bi,m plus u/s markers."""
+    runs: list[tuple[str, str]] = []
+    position = 0
+    for match in _INLINE.finditer(text):
+        if match.start() > position:
+            runs.append((_strip_links(text[position:match.start()]), "r"))
+        kind = match.lastgroup or "r"
+        body = match.group(0)
+        if kind == "math":
+            body = body[1:-1]
+        elif kind == "footnote":
+            body = body[2:-1]
+        elif kind == "code":
+            body = body[1:-1]
+        elif kind == "bolditalic":
+            body = body[3:-3]
+        elif kind in ("bold", "italic"):
+            body = body[2:-2] if kind == "bold" else body[1:-1]
+        elif kind == "underline":
+            body = body[2:-2]
+        elif kind == "strike":
+            body = body[2:-2]
+        runs.append((body, _STYLE_FLAGS.get(kind, "r")))
+        position = match.end()
+    if position < len(text):
+        runs.append((_strip_links(text[position:]), "r"))
+    return [(chunk, style) for chunk, style in runs if chunk]
+
+
+def _strip_links(text: str) -> str:
+    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)
+    return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", text)
+
+
+def _plain(text: str) -> str:
+    return "".join(chunk for chunk, _style in _parse_inline(text))
+
+
+# A figure is sized to its own page, not to whatever vertical space happens to be
+# left. Shrinking a 2400 px plot to a third of the page makes its axes unreadable,
+# so the layout moves to a fresh page instead and keeps the figure large.
+FIGURE_HEIGHT_FRACTION = 0.62      # of the printable height, leaving room for caption
+FIGURE_MIN_HEIGHT = 0.30           # below this the caption crowd out the plot itself
+
+
+def _place_figure(layout, canvas, path: Path, caption: str, artifact_id: str, number: int) -> None:
+    """Draw one figure at the largest size that still fits, caption directly beneath."""
+    with _figure_image(path) as image:
+        printable = layout.height - 2 * layout.margin
+        caption_room = 74.0
+        target = printable * FIGURE_HEIGHT_FRACTION
+        scale = min(layout.usable / image.width, target / image.height)
+        height = image.height * scale
+        # Only start a new page when the remaining space cannot hold a readable
+        # figure plus its caption; never silently shrink below that floor.
+        if layout.y - layout.margin < height + caption_room and height < printable * 0.9:
+            room = layout.y - layout.margin - caption_room
+            if room < printable * FIGURE_MIN_HEIGHT:
+                layout.new_page()
+        room = layout.y - layout.margin - caption_room
+        scale = min(layout.usable / image.width, target / image.height,
+                    max(room, printable * FIGURE_MIN_HEIGHT) / image.height)
+        width, height = image.width * scale, image.height * scale
+        layout.need(height + caption_room)
+        layout.y -= height
+        canvas.drawImage(ImageReader(image), layout.margin + (layout.usable - width) / 2,
+                         layout.y, width=width, height=height, mask="auto")
+    layout.y -= 10
+    layout.rich(f"图 {number}. " + " ".join(caption.splitlines()), size=9, after=2)
+    layout.rich(f"工件：`{artifact_id}`", size=8, after=14)
+
+
+MATHTEXT_DPI = 400
+MATH_CACHE: dict[tuple[str, float, bool], tuple[bytes, float, float, float]] = {}
+_MATH_LOCK = threading.Lock()
+
+
+def math_image(expression: str, size: float, bold: bool = False) -> tuple[bytes, float, float, float]:
+    """Rasterise a TeX expression locally; returns (png, width_pt, height_pt, depth_pt).
+
+    matplotlib's mathtext is a self-contained TeX-subset engine, so no TeX
+    installation is required and nothing leaves the machine. Cache is keyed by the
+    expression and font size because a report commonly repeats the same symbol.
+    """
+    key = (expression, round(float(size), 2), bool(bold))
+    with _MATH_LOCK:
+        cached = MATH_CACHE.get(key)
+        if cached is not None:
+            return cached
+        from matplotlib import mathtext
+        from matplotlib.font_manager import FontProperties
+        buffer = BytesIO()
+        prop = FontProperties(size=float(size))
+        depth = mathtext.math_to_image(expression, buffer, prop=prop,
+                                      dpi=MATHTEXT_DPI, format="png")
+        buffer.seek(0)
+        with Image.open(buffer) as image:
+            width_pt = image.width / MATHTEXT_DPI * 72.0
+            height_pt = image.height / MATHTEXT_DPI * 72.0
+        depth_pt = float(depth) / MATHTEXT_DPI * 72.0
+        value = (buffer.getvalue(), width_pt, height_pt, depth_pt)
+        if len(MATH_CACHE) > 512:
+            MATH_CACHE.clear()
+        MATH_CACHE[key] = value
+        return value
+
+
+def _figure_image(path: Path) -> Image.Image:
+    if not path.is_file():
+        raise ValueError(f"Figure is not a local regular file: {path}")
+    if path.stat().st_size > MAX_IMAGE_BYTES:
+        raise ValueError(f"Figure exceeds {MAX_IMAGE_BYTES} bytes: {path}")
+    # Bounded local read also protects against a file growing after stat().
+    with path.open("rb") as stream:
+        data = stream.read(MAX_IMAGE_BYTES + 1)
+    if len(data) > MAX_IMAGE_BYTES:
+        raise ValueError(f"Figure exceeds {MAX_IMAGE_BYTES} bytes: {path}")
+    with Image.open(BytesIO(data)) as original:
+        if original.format not in {"PNG", "JPEG"}:
+            raise ValueError(f"Only PNG/JPEG figures are supported: {path}")
+        if original.width * original.height > MAX_IMAGE_PIXELS:
+            raise ValueError(f"Figure exceeds {MAX_IMAGE_PIXELS} pixels: {path}")
+        if getattr(original, "n_frames", 1) != 1:
+            raise ValueError(f"Animated figures are unsupported: {path}")
+        original.verify()
+    with Image.open(BytesIO(data)) as original:
+        original.load()
+        image = ImageOps.exif_transpose(original)
+        image.thumbnail((2400, 2400))
+        return image.convert("RGBA" if "A" in image.getbands() or
+                             "transparency" in image.info else "RGB")
+
+
+def render_report(markdown_text: str, output_path: Path, *, title: str,
+                  figures: list[dict] = []) -> dict:
+    """Render a report, raising on invalid inputs or rendering/write failures.
+
+    Limits: 200k source characters, 20 figures, 1024 title characters, 4000
+    characters per caption, 256 per artifact ID, and 500 pages. Images are
+    limited to 25 MiB/40 million pixels and embedded at at most 2400x2400 px.
+    Headings (# through ######) and fenced blocks are recognized; all other
+    Markdown is literal text. No link/image destination is opened from text.
+    The default figures list is never mutated. Output parents must exist.
+    PDF bytes are fully rendered in memory before opening the output file.
+    """
+    if not isinstance(markdown_text, str):
+        raise TypeError("markdown_text must be a string")
+    if len(markdown_text) > MAX_TEXT_CHARS:
+        raise ValueError(f"Report text exceeds {MAX_TEXT_CHARS} characters")
+    if not isinstance(title, str):
+        raise TypeError("title must be a string")
+    if not title.strip() or len(title) > 1024:
+        raise ValueError("title must contain 1-1024 characters")
+    if not isinstance(figures, list):
+        raise TypeError("figures must be a list")
+    if len(figures) > MAX_FIGURES:
+        raise ValueError(f"Report exceeds {MAX_FIGURES} figures")
+    output_path = Path(output_path)
+    prepared = []
+    for figure in figures:
+        if not isinstance(figure, dict):
+            raise TypeError("Each figure must be a dictionary")
+        path = figure.get("path")
+        caption, artifact_id = figure.get("caption"), figure.get("artifact_id")
+        if not isinstance(path, (str, Path)) or not str(path):
+            raise ValueError("Figure path must be a nonempty local path")
+        if not isinstance(caption, str) or len(caption) > 4000:
+            raise ValueError("Figure caption must be a string of at most 4000 characters")
+        if not isinstance(artifact_id, str) or not artifact_id.strip() or len(artifact_id) > 256:
+            raise ValueError("Figure artifact_id must contain 1-256 characters")
+        figure_path = Path(path)
+        if output_path.resolve() == figure_path.resolve():
+            raise ValueError("Output path must not overwrite a figure")
+        prepared.append((figure_path, caption, artifact_id))
+
+    buffer = BytesIO()
+    canvas = Canvas(buffer, pagesize=A4, pageCompression=1, invariant=1)
+    canvas.setTitle(title)
+    canvas.setAuthor("Levin Research Notebook")
+    layout = _Layout(canvas)
+    layout.rich(" ".join(title.splitlines()), size=19, after=8, bold=True)
+
+    lines = markdown_text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    index = 0
+    blank = False
+    first_heading = True
+    placed: set[int] = set()
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        fence = re.match(r"^\s*(`{3,}|~{3,})\s*(\S*)$", line)
+        if fence:
+            marker = fence.group(1)
+            block = []
+            index += 1
+            while index < len(lines) and not re.match(r"^\s*" + re.escape(marker[0]) + "{" + str(len(marker)) + r",}\s*$", lines[index]):
+                block.append(lines[index])
+                index += 1
+            index += 1
+            layout.code_block(block[:400], language=fence.group(2) or "text")
+            blank = False
+            continue
+        if not stripped:
+            if not blank:
+                layout.y -= 4
+            blank = True
+            index += 1
+            continue
+        blank = False
+        if stripped == "\\figures":
+            for number, (path, caption, artifact_id) in enumerate(prepared, 1):
+                _place_figure(layout, canvas, path, caption, artifact_id, number)
+            placed.update(range(1, len(prepared) + 1))
+            index += 1
+            continue
+        single = re.fullmatch(r"\\figure\{([^{}]+)\}", stripped)
+        if single:
+            # A targeted figure lands next to the claim that needs it, which is the
+            # whole point: a reader should not have to hunt for the plot.
+            wanted = single.group(1).strip()
+            match = next(((n, item) for n, item in enumerate(prepared, 1)
+                          if item[2] == wanted or Path(item[0]).name == wanted), None)
+            if match is None:
+                layout.rich(f"[未找到图 {wanted}：请在 figures 中登记该工件]", size=9, after=6)
+                index += 1
+                continue
+            number, (path, caption, artifact_id) = match
+            _place_figure(layout, canvas, path, caption, artifact_id, number)
+            placed.add(number)
+            index += 1
+            continue
+        display_math = re.fullmatch(r"\$\$(.+?)\$\$", stripped) or re.fullmatch(r"\\\[(.+?)\\\]", stripped)
+        if display_math:
+            expression = " ".join(display_math.group(1).split())
+            try:
+                png, width_pt, height_pt, depth_pt = math_image(expression, 11.5)
+            except Exception:
+                layout.rich("$" + expression + "$", size=10, after=8)
+                index += 1
+                continue
+            if width_pt > layout.usable:
+                scale = layout.usable / width_pt
+                width_pt, height_pt, depth_pt = width_pt * scale, height_pt * scale, depth_pt * scale
+            layout.need(height_pt + 26)
+            layout.y -= height_pt + 8
+            canvas.drawImage(ImageReader(BytesIO(png)),
+                             layout.margin + (layout.usable - width_pt) / 2,
+                             layout.y + depth_pt - 2, width=width_pt, height=height_pt, mask="auto")
+            layout.y -= 10
+            layout.drawn = True
+            index += 1
+            continue
+        if stripped in ("\\pagebreak", "\\newpage"):
+            layout.page_break()          # explicit divider: artifacts open a new page
+            index += 1
+            continue
+        if re.fullmatch(r"(-{3,}|\*{3,}|_{3,})", stripped):
+            layout.rule()
+            index += 1
+            continue
+        heading = re.match(r"^(#{1,6})\s+(.+)$", line)
+        if heading:
+            level = len(heading.group(1))
+            text = heading.group(2)
+            if level == 1 and first_heading and _plain(text).casefold() == " ".join(title.split()).casefold():
+                first_heading = False
+                index += 1
+                continue
+            first_heading = False
+            size = max(10.5, 17 - level * 1.6)
+            layout.need(size * 2 + (44 if level <= 2 else 30))
+            layout.y -= 4 if level >= 3 else 8
+            layout.rich(text, size=size, after=6, bold=True)
+            index += 1
+            continue
+        if stripped.startswith("|") and index + 1 < len(lines) and re.match(r"^\s*\|?\s*:?-{2,}", lines[index + 1]):
+            header = [cell.strip() for cell in stripped.strip("|").split("|")]
+            index += 2
+            rows = []
+            while index < len(lines) and lines[index].strip().startswith("|"):
+                rows.append([cell.strip() for cell in lines[index].strip().strip("|").split("|")])
+                index += 1
+            layout.table(header, rows[:400])
+            continue
+        note = re.match(r"^\[\^([^\]]+)\]:\s*(.+)$", stripped)
+        if note:
+            layout.rich(f"[{note.group(1)}] {note.group(2)}", size=9, indent=12, after=3)
+            index += 1
+            continue
+        if stripped.startswith(">"):
+            quote = [stripped.lstrip("> ").strip()]
+            index += 1
+            while index < len(lines) and lines[index].strip().startswith(">"):
+                quote.append(lines[index].strip().lstrip("> ").strip())
+                index += 1
+            text = " ".join(part for part in quote if part)
+            layout.need(14)
+            top = layout.y
+            layout.rich(text, size=9.4, indent=14, after=4)
+            canvas.setLineWidth(1.6)
+            canvas.setStrokeGray(0.72)
+            canvas.line(layout.margin + 4, top - 2, layout.margin + 4, layout.y + 2)
+            canvas.setStrokeGray(0)
+            continue
+        bullet = re.match(r"^(\s*)([-*+]|\d+[.)])\s+(.+)$", line)
+        if bullet:
+            depth = len(bullet.group(1)) // 2
+            marker = "•" if bullet.group(2) in "-*+" else bullet.group(2)
+            layout.rich(f"{marker} {bullet.group(3)}", size=10, indent=12 + depth * 12, after=2)
+            index += 1
+            continue
+        paragraph = [stripped]
+        index += 1
+        while index < len(lines):
+            nxt = lines[index]
+            if (not nxt.strip() or nxt.strip() in ("\\pagebreak", "\\newpage") or nxt.lstrip().startswith(("#", "|", ">", "```", "~~~"))
+                    or re.match(r"^(\s*)([-*+]|\d+[.)])\s+", nxt)
+                    or re.fullmatch(r"(-{3,}|\*{3,}|_{3,})", nxt.strip())):
+                break
+            paragraph.append(nxt.strip())
+            index += 1
+        layout.rich(" ".join(paragraph), size=10, after=6)
+
+    remaining = [(n, item) for n, item in enumerate(prepared, 1) if n not in placed]
+    if remaining:
+        layout.need(60)
+        layout.rich("其余图表" if placed else "图表", size=13, after=6)
+        for number, (path, caption, artifact_id) in remaining:
+            _place_figure(layout, canvas, path, caption, artifact_id, number)
+    pages = layout.finish()
+    output_path.write_bytes(buffer.getvalue())
+    return {"pdf_path": str(output_path), "pages": pages,
+            "renderer": f"reportlab-{reportlab.Version}",
+            "unsupported_codepoints": [f"U+{point:04X}" for point in sorted(layout.unsupported)],
+            "transliterated_codepoints": [f"U+{point:04X}" for point in sorted(layout.transliterated)]}

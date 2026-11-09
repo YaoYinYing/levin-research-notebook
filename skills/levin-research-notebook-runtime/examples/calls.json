@@ -1,0 +1,194 @@
+{
+  "schemaVersion": 1,
+  "examples": [
+    {
+      "id": "init-experiment",
+      "tool": "research_record_init",
+      "purpose": "Create or resume one experiment record for a stable task identity",
+      "arguments": {
+        "workspace_dir": "/Users/me/project",
+        "task_id": "decay-convergence",
+        "agent_id": "main-agent",
+        "title": "Explicit Euler convergence on exponential decay",
+        "objective": "Determine how first-order Euler error scales with step size on dN/dt=-kN.",
+        "hypothesis": "Global error is first order in dt over the tested range.",
+        "purpose": "前一轮已完成 MD 生产模拟，本轮只做轨迹后处理，不新增模拟。",
+        "implementer": {
+          "kind": "agent",
+          "name": "Levin 主代理",
+          "model": "claude-sonnet-4.6"
+        },
+        "environment_location": "/Users/me/project/levin_scratch/venv"
+      },
+      "server": "runner"
+    },
+    {
+      "id": "register-raw-input",
+      "tool": "research_record_register_artifact",
+      "purpose": "Reference a cluster dataset in place; a local copy would additionally need remote_copy_permission",
+      "arguments": {
+        "workspace_dir": "/Users/me/project",
+        "experiment_id": "exp-0123456789abcdef0123456789abcdef",
+        "artifact": {
+          "role": "raw",
+          "location": "ssh://hpc-node7/scratch/measurement.csv",
+          "description": "Original measurement export kept on the cluster",
+          "source_origin": "remote_copy",
+          "remote_host": "hpc-node7",
+          "remote_path": "/scratch/measurement.csv",
+          "conditions": {
+            "instrument": "synthetic",
+            "units": "mol/L"
+          }
+        }
+      },
+      "server": "runner"
+    },
+    {
+      "id": "register-run",
+      "tool": "research_record_register_run",
+      "purpose": "Record execution provenance for a completed local or HPC job",
+      "arguments": {
+        "workspace_dir": "/Users/me/project",
+        "experiment_id": "exp-0123456789abcdef0123456789abcdef",
+        "run": {
+          "backend": "slurm",
+          "external_id": "48152",
+          "execution_status": "success",
+          "command": "python scripts/analyze.py --dt 0.1",
+          "parameters": {
+            "dt": 0.1,
+            "steps": 100
+          },
+          "environment": {
+            "python": "3.11.11",
+            "numpy": "2.1.3"
+          },
+          "input_ids": [],
+          "output_ids": [],
+          "host": "hpc-node7"
+        }
+      },
+      "server": "runner"
+    },
+    {
+      "id": "checkpoint-conclusion",
+      "tool": "research_record_checkpoint",
+      "purpose": "Append an evidence-linked conclusion, safe to retry with the same request_id",
+      "arguments": {
+        "workspace_dir": "/Users/me/project",
+        "experiment_id": "exp-0123456789abcdef0123456789abcdef",
+        "agent_id": "main-agent",
+        "kind": "conclusion",
+        "text": "Observed error halved when dt halved across 0.1 to 0.0125, consistent with first order.",
+        "evidence_ids": [
+          "artifact-00000000000000000000000000000000"
+        ],
+        "request_id": "conclusion-v1"
+      },
+      "server": "runner"
+    },
+    {
+      "id": "validate",
+      "tool": "research_record_validate",
+      "purpose": "Read-only provenance and bounded integrity check before finalizing",
+      "arguments": {
+        "workspace_dir": "/Users/me/project",
+        "experiment_id": "exp-0123456789abcdef0123456789abcdef"
+      },
+      "server": "runner"
+    },
+    {
+      "id": "finalize-success",
+      "tool": "research_record_finalize",
+      "purpose": "Snapshot editable sources and render the fixed-layout PDF",
+      "arguments": {
+        "workspace_dir": "/Users/me/project",
+        "experiment_id": "exp-0123456789abcdef0123456789abcdef",
+        "execution_status": "success",
+        "interpretation": "Euler error is first order in dt over the tested range; not extrapolated beyond it.",
+        "limitations": "Synthetic stiff-free ODE only; one solver family; no adaptive stepping tested.",
+        "visualization": {
+          "beneficial": true,
+          "reason": "Error-vs-step-size scaling is best shown on log axes.",
+          "figure_ids": [
+            "artifact-11111111111111111111111111111111"
+          ],
+          "reviewed_by": "main-agent"
+        },
+        "strategy": [
+          {
+            "title": "端点法配合逐副本统计",
+            "text": "在既有轨迹上直接取自由能差，用副本级统计控制采样敏感性。"
+          }
+        ],
+        "method_plan": [
+          "确认轨迹完整",
+          "逐副本运行端点法",
+          "汇总并检查收敛"
+        ],
+        "materials": {
+          "software": [
+            "gmx_MMPBSA 1.6.3"
+          ]
+        },
+        "results": {
+          "expected_seen": [
+            "两副本 ΔG 均为负"
+          ],
+          "unexpected_seen": [],
+          "expected_not_seen": [
+            "未观察到收敛平台"
+          ],
+          "incidents": []
+        },
+        "footnotes": [
+          {
+            "label": "n1",
+            "text": "端点法忽略构象熵，差异小于 1 kcal/mol 时不宜作因果解读。"
+          }
+        ],
+        "remote_space": [
+          {
+            "host": "hpc-node7",
+            "path": "/scratch/run42",
+            "bytes": 184320000000,
+            "files": 1204
+          }
+        ]
+      },
+      "server": "runner"
+    },
+    {
+      "id": "finalize-failed-task",
+      "tool": "research_record_finalize",
+      "purpose": "Failed work still produces a concise record and PDF without fabricated results",
+      "arguments": {
+        "workspace_dir": "/Users/me/project",
+        "experiment_id": "exp-0123456789abcdef0123456789abcdef",
+        "execution_status": "failed",
+        "interpretation": "No measurement was obtained; the objective remains unanswered.",
+        "limitations": "Solver aborted at step 40 after a non-finite value.",
+        "visualization": {
+          "beneficial": false,
+          "reason": "No valid measurements exist to visualize.",
+          "figure_ids": [],
+          "reviewed_by": "main-agent"
+        }
+      },
+      "server": "runner"
+    },
+    {
+      "id": "index-search",
+      "tool": "research_record_index",
+      "purpose": "Find prior experiments from filesystem manifests",
+      "arguments": {
+        "workspace_dir": "/Users/me/project",
+        "query": "convergence",
+        "limit": 20,
+        "offset": 0
+      },
+      "server": "runner"
+    }
+  ]
+}

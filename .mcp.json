@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "runner": {
+      "command": "python",
+      "args": [
+        "./mcp/runner/server.py"
+      ],
+      "cwd": ".",
+      "runtimeId": "runner"
+    }
+  }
+}

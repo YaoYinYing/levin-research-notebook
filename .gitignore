@@ -1,0 +1,19 @@
+# Build artefacts: regenerate with the Creator CLI (`compile` / `package`).
+# `.levin-plugin/` holds the compiled manifest + vendored SDK, and `dist/` holds
+# the packaged .levin-plugin.tgz. Neither is editable source.
+.levin-plugin/
+dist/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Local test artefacts (the suite writes scratch dirs under the temp dir)
+levin_scratch/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
