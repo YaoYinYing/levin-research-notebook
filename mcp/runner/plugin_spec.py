@@ -1,7 +1,7 @@
 from levin_plugin_sdk import Plugin, PythonRuntime, RuntimeCommand
 
 plugin = Plugin(
-    id='levin-research-notebook',version='0.10.4',display_name='Levin Research Notebook',
+    id='levin-research-notebook',version='0.11.0',display_name='Levin Research Notebook',
     description='Filesystem research evidence, experiment provenance and editable scientific reports.',
     server_name='runner',runtime=PythonRuntime(id='runner',python='3.11',project='./mcp/runner',cache_key='runner',
         packages=('jsonschema==4.23.0','filelock==3.16.1','reportlab==4.2.5','matplotlib==3.9.4','bibtexparser==2.1.0'),
@@ -47,7 +47,7 @@ DEFS=[
             'synthesis':{'type':'string','maxLength':20000},
             'bibtex_path':{'type':'string','maxLength':4096,'description':'Workspace-relative .bib parsed with bibtexparser v2.'},
             'bibtex':{'type':'string','maxLength':200000,'description':'Inline BibTeX parsed with bibtexparser v2.'},
-            'record_type':{'enum':['experiment','analysis','literature_review']}},('workspace_dir','experiment_id','execution_status','interpretation','limitations','visualization')),{'experiment_id':fake,'execution_status':'failed','interpretation':'No scientific conclusion','limitations':'Synthetic preview only','visualization':{'beneficial':False,'reason':'No measurements','figure_ids':[],'reviewed_by':'contract'},'preview':True},True),
+            'record_type':{'enum':['experiment','analysis','literature_review']},'font_profile':{'type':'string','maxLength':60,'description':'Named font intent chosen for this report (scientific-cjk, cjk-sans, latin-only, or auto). Resolved against fonts actually present on the host.'}},('workspace_dir','experiment_id','execution_status','interpretation','limitations','visualization')),{'experiment_id':fake,'execution_status':'failed','interpretation':'No scientific conclusion','limitations':'Synthetic preview only','visualization':{'beneficial':False,'reason':'No measurements','figure_ids':[],'reviewed_by':'contract'},'preview':True},True),
  ('index','Search filesystem manifests, checkpoints, conclusions, artifact locations and run provenance; whitespace-separated query terms are combined with AND; malformed records are returned as errors.',obj({**common,'query':{'type':'string','maxLength':300},'limit':{'type':'integer','minimum':1,'maximum':1000},'offset':{'type':'integer','minimum':0}},('workspace_dir',)),{},False),
 ]
 for suffix,description,schema,fixture,mutation in DEFS:

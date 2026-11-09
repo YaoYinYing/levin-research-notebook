@@ -113,6 +113,7 @@ SCHEMA = {
  'search_strategy':{'type':['object','null'],'additionalProperties':False,'properties':{'databases':{'type':'string'},'query':{'type':'string'},'window':{'type':'string'},'languages':{'type':'string'},'screening':{'type':'string'}}},
  'references':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['id','citation'],'properties':{'id':{'type':'string','minLength':1,'maxLength':60},'citation':{'type':'string','minLength':1},'year':{'type':['integer','null']},'venue':{'type':'string'},'design':{'type':'string'},'sample':{'type':'string'},'key_findings':{'type':'string'},'evidence_level':{'type':'string'},'relevance':{'type':'string'},'read_full_text':{'type':['boolean','null']},'doi':{'type':'string'},'authors':{'type':'array','items':{'type':'string'}},'title':{'type':'string'},'entry_type':{'type':'string'},'section':{'type':'string'},'metadata_issues':{'type':'array','items':{'type':'string'}},'source':{'type':'string'}}}},
  'synthesis':{'type':'string'},
+ 'font_profile':{'type':'string','maxLength':60},
  'citations':{'type':'array','maxItems':2000,'items':{'type':'object','additionalProperties':False,'required':['from','to'],'properties':{'from':{'type':'string'},'to':{'type':'string'},'relation':{'type':'string'}}}},
  'reference_sections':{'type':'array','maxItems':50,'items':{'type':'object','additionalProperties':False,'required':['title'],'properties':{'title':{'type':'string','minLength':1,'maxLength':200},'text':{'type':'string','maxLength':20000}}}},
  'quantities':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['name','value'],'properties':{'name':{'type':'string','minLength':1,'maxLength':120},'value':{'type':'number'},'unit':{'type':'string','maxLength':60},'uncertainty':{'type':['number','null']},'uncertainty_unit':{'type':'string','maxLength':60},'note':{'type':'string','maxLength':1000},'artifact_id':{'type':'string','maxLength':120}}}},
@@ -475,7 +476,7 @@ class Notebook:
             return {'ok':True,'experiment_id':eid,**result}
         except Exception as e: return {'ok':True,'experiment_id':eid,'valid':False,'errors':[str(e)],'warnings':[]}
 
-    def finalize(self,eid,execution_status,interpretation,limitations,visualization,request_id=None,lessons=(),plans=(),strategy=(),method_plan=(),materials=None,results=None,footnotes=(),remote_space=(),purpose='',environment_location='',search_strategy=None,references=(),synthesis='',citations=(),extra_sections=(),record_type=None,bibtex=None,bibtex_path=None,reference_sections=(),quantities=()):
+    def finalize(self,eid,execution_status,interpretation,limitations,visualization,request_id=None,lessons=(),plans=(),strategy=(),method_plan=(),materials=None,results=None,footnotes=(),remote_space=(),purpose='',environment_location='',search_strategy=None,references=(),synthesis='',citations=(),extra_sections=(),record_type=None,bibtex=None,bibtex_path=None,reference_sections=(),quantities=(),font_profile=None):
         text(interpretation,'interpretation'); text(limitations,'limitations')
         for item in list(lessons)+list(plans): text(item,'lessons/plans entry')
         for entry in strategy:
@@ -535,7 +536,7 @@ class Notebook:
                      search_strategy=search_strategy or {},references=list(references),synthesis=note_text,
                      bibtex_source=bib_source, bibtex_warnings=bib_warnings,
                      citations=list(citations),extra_sections=list(extra_sections),record_type=record_type,
-                     reference_sections=ref_sections,quantities=qty)
+                     reference_sections=ref_sections,quantities=qty,font_profile=font_profile)
         def change(m):
             m.update(interpretation=interpretation,limitations=limitations,visualization=visualization,
                      lessons=list(lessons),plans=list(plans),strategy=list(strategy),method_plan=list(method_plan),
@@ -552,6 +553,7 @@ class Notebook:
             m['citations']=list(citations) if citations else m.get('citations',[])
             m['reference_sections']=ref_sections if ref_sections else m.get('reference_sections',[])
             m['quantities']=qty if qty else m.get('quantities',[])
+            if font_profile: m['font_profile']=font_profile
             m['extra_sections']=list(extra_sections) if extra_sections else m.get('extra_sections',[])
             if note_text: m['synthesis']=note_text
             current={'notebook':usage(self.root),'scratch':usage(self.scratch)}
@@ -589,8 +591,12 @@ class Notebook:
                         if p and p.suffix.lower() in ('.png','.jpg','.jpeg') and a['sha256'] and p.stat().st_size<=HASH_BUDGET and digest(p)==a['sha256']:
                             figures.append(dict(path=str(p),caption=a['description'],artifact_id=aid))
                     pdf=d/'report.pdf'
-                    info=render_report(source,pdf,title=m['title'],figures=figures)
+                    info=render_report(source,pdf,title=m['title'],figures=figures,
+                                       font_profile=font_profile or m.get('font_profile'))
                     record.update(pdf_path=str(pdf.relative_to(self.workspace)),pdf_path_sha256=digest(pdf),render_state='success',renderer=info)
+                    # Which faces a report actually used belongs in the record: a
+                    # silent fallback is otherwise invisible after the fact.
+                    record['fonts']=info.get('fonts')
                 except Exception as e: record.update(render_state='failed',error=str(e))
             m['reports'].append(record)
             usage_result=dict(m['usage_at_finalize'])

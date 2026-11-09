@@ -27,94 +27,237 @@ MAX_FIGURES = 20
 MAX_PAGES = 500
 MAX_IMAGE_BYTES = 25 * 1024 * 1024
 MAX_IMAGE_PIXELS = 40_000_000
-_FONT_LOCK = threading.Lock()
-_CJK_CANDIDATES = (
-    ("/System/Library/Fonts/STHeiti Light.ttc", 1),
-    ("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 0),
-    ("/usr/share/fonts/truetype/arphic/uming.ttc", 0),
-    ("C:/Windows/Fonts/msyh.ttc", 0),
+# Reentrant: _load_fallbacks holds the lock while calling _register_once, which
+# acquires it again. A plain Lock deadlocks the whole renderer on the first call.
+_FONT_LOCK = threading.RLock()
+
+# ReportLab raises `TTFError: postscript outlines are not supported` on .otf, so the
+# candidate chains below deliberately list only TrueType-outline files (.ttf/.ttc).
+# That rules out Source Han / Noto CJK .otf builds, which is why each chain carries
+# several platform spellings rather than one "correct" font name.
+_LATIN_SERIF = (
+    # macOS
+    ("/System/Library/Fonts/Supplemental/Times New Roman.ttf", None, False),
+    ("/Library/Fonts/Times New Roman.ttf", None, False),
+    # Linux (metric-compatible with Times)
+    ("/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf", None, False),
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf", None, False),
+    # Windows
+    ("C:/Windows/Fonts/times.ttf", None, False),
+)
+_LATIN_SERIF_BOLD = (
+    ("/System/Library/Fonts/Supplemental/Times New Roman Bold.ttf", None, False),
+    ("/Library/Fonts/Times New Roman Bold.ttf", None, False),
+    ("/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf", None, False),
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf", None, False),
+    ("C:/Windows/Fonts/timesbd.ttf", None, False),
+)
+_LATIN_SERIF_ITALIC = (
+    ("/System/Library/Fonts/Supplemental/Times New Roman Italic.ttf", None, False),
+    ("/usr/share/fonts/truetype/liberation/LiberationSerif-Italic.ttf", None, False),
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Italic.ttf", None, False),
+    ("C:/Windows/Fonts/timesi.ttf", None, False),
+)
+_LATIN_SERIF_BOLD_ITALIC = (
+    ("/System/Library/Fonts/Supplemental/Times New Roman Bold Italic.ttf", None, False),
+    ("/usr/share/fonts/truetype/liberation/LiberationSerif-BoldItalic.ttf", None, False),
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSerif-BoldItalic.ttf", None, False),
+    ("C:/Windows/Fonts/timesbi.ttf", None, False),
+)
+_MONO = (
+    ("/System/Library/Fonts/Menlo.ttc", 0, False),
+    ("/System/Library/Fonts/Monaco.ttf", None, False),
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", None, False),
+    ("C:/Windows/Fonts/consola.ttf", None, False),
 )
 
+# CJK body faces: a serif (宋体 role) and a sans/heavy face (黑体 role). The pair is
+# what makes "Chinese in Songti, Latin in Times" work, because Times has no CJK
+# glyphs at all: every Chinese character resolves through this chain per glyph.
+_CJK_SERIF = (
+    ("/System/Library/Fonts/Supplemental/Songti.ttc", 3, True),
+    ("/System/Library/Fonts/Supplemental/Songti.ttc", 4, True),
+    ("/usr/share/fonts/truetype/noto/NotoSerifCJK-Regular.ttc", 0, True),
+    ("/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc", 0, True),
+    ("/usr/share/fonts/truetype/arphic/uming.ttc", 0, True),
+    ("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 0, True),
+    ("C:/Windows/Fonts/simsun.ttc", 0, True),
+)
+_CJK_SANS = (
+    ("/System/Library/Fonts/STHeiti Medium.ttc", 1, True),
+    ("/System/Library/Fonts/STHeiti Light.ttc", 1, True),
+    ("/System/Library/Fonts/Hiragino Sans GB.ttc", 0, True),
+    ("/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc", 0, True),
+    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", 0, True),
+    ("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 0, True),
+    ("C:/Windows/Fonts/msyhbd.ttc", 0, True),
+    ("C:/Windows/Fonts/msyh.ttc", 0, True),
+)
 
-# Body: Songti (宋体) CJK + Times New Roman Latin. Headings/bold: Heiti (黑体) + Times New Roman Bold.
-LATIN = {"r": "NotebookTimes", "b": "NotebookTimesBold", "i": "NotebookTimesItalic",
-         "bi": "NotebookTimesBoldItalic", "m": "NotebookMono", "mb": "NotebookMonoBold",
-         "mi": "NotebookMonoItalic"}
-_MONO = (("/System/Library/Fonts/Menlo.ttc", 0), ("/System/Library/Fonts/Monaco.ttf", None))
-CJK = {"r": "NotebookSongti", "b": "NotebookHeiti", "i": "NotebookSongti", "bi": "NotebookHeiti"}
-_TIMES_DIR = Path("/System/Library/Fonts/Supplemental")
-_TIMES = (("NotebookTimes", "Times New Roman.ttf"), ("NotebookTimesBold", "Times New Roman Bold.ttf"),
-          ("NotebookTimesItalic", "Times New Roman Italic.ttf"),
-          ("NotebookTimesBoldItalic", "Times New Roman Bold Italic.ttf"))
-_SONGTI = (("/System/Library/Fonts/Supplemental/Songti.ttc", 3), ("/System/Library/Fonts/Supplemental/Songti.ttc", 4))
-_HEITI = (("/System/Library/Fonts/STHeiti Medium.ttc", 1), ("/System/Library/Fonts/STHeiti Light.ttc", 1))
-FONTS = {**LATIN, "songti": "NotebookSongti", "heiti": "NotebookHeiti"}
+# A profile is a named intent, not a font menu. The agent picks the intent from what
+# the report actually contains; the resolver turns it into concrete registered faces.
+FONT_PROFILES = {
+    # Chinese body in a serif, Latin in Times: the scientific default.
+    "scientific-cjk": {"latin": _LATIN_SERIF, "latin_bold": _LATIN_SERIF_BOLD,
+                       "latin_italic": _LATIN_SERIF_ITALIC,
+                       "latin_bold_italic": _LATIN_SERIF_BOLD_ITALIC,
+                       "cjk": _CJK_SERIF, "cjk_bold": _CJK_SANS, "mono": _MONO},
+    # Heavy sans headings and sans body: for slide-like or poster-like summaries.
+    "cjk-sans": {"latin": _LATIN_SERIF, "latin_bold": _LATIN_SERIF_BOLD,
+                 "latin_italic": _LATIN_SERIF_ITALIC,
+                 "latin_bold_italic": _LATIN_SERIF_BOLD_ITALIC,
+                 "cjk": _CJK_SANS, "cjk_bold": _CJK_SANS, "mono": _MONO},
+    # Latin-only reports still get a CJK fallback so a stray character never vanishes.
+    "latin-only": {"latin": _LATIN_SERIF, "latin_bold": _LATIN_SERIF_BOLD,
+                   "latin_italic": _LATIN_SERIF_ITALIC,
+                   "latin_bold_italic": _LATIN_SERIF_BOLD_ITALIC,
+                   "cjk": _CJK_SERIF, "cjk_bold": _CJK_SANS, "mono": _MONO},
+}
+DEFAULT_PROFILE = "scientific-cjk"
+
+_FALLBACK_CJK = _CJK_SERIF + _CJK_SANS
 
 
-def _register(name: str, path: str, index: int | None = None) -> bool:
-    """Register one face; return False when the platform does not provide it."""
+def _register_once(name: str, path: str, index: int | None) -> bool:
+    """Register one face, tolerating a font that is absent or has CFF outlines."""
     if name in pdfmetrics.getRegisteredFontNames():
         return True
     if not Path(path).is_file():
         return False
     try:
         with _FONT_LOCK:
-            pdfmetrics.registerFont(TTFont(name, path, subfontIndex=index) if index is not None
-                                    else TTFont(name, path))
-        face = pdfmetrics.getFont(name).face
-        return bool(getattr(face, "charToGlyph", {}).get(ord("中")))
+            face = TTFont(name, path, subfontIndex=index) if index is not None else TTFont(name, path)
+            pdfmetrics.registerFont(face)
+        glyphs = getattr(pdfmetrics.getFont(name).face, "charToGlyph", {})
+        return bool(glyphs.get(ord("A")) or glyphs.get(ord("中")))
     except Exception:
+        # Absent, CFF-outlined, or otherwise unusable: try the next candidate.
         return False
 
 
-@lru_cache(maxsize=1)
-def _base_fonts() -> tuple[str, str]:
-    """Latin serif (Times New Roman) plus the CJK faces; falls back to bundled Vera."""
-    for name, filename in _TIMES:
-        _register(name, str(_TIMES_DIR / filename))
-    for name, candidates in (("NotebookSongti", _SONGTI), ("NotebookHeiti", _HEITI)):
-        if not any(_register(name, path, index) for path, index in candidates):
-            _register(name, "/System/Library/Fonts/STHeiti Light.ttc", 1)
-    path, index = _MONO[0]
-    if not _register("NotebookMono", path, index):
-        if not any(_register("NotebookMono", p, i) for p, i in _MONO):
-            FONTS.update({"m": "Courier", "mb": "Courier-Bold", "mi": "Courier-Oblique"})
-    _register("NotebookMonoBold", "/System/Library/Fonts/Menlo.ttc", 1)
-    _register("NotebookMonoItalic", "/System/Library/Fonts/Menlo.ttc", 2)
-    registered = set(pdfmetrics.getRegisteredFontNames())
-    if "NotebookMonoBold" not in registered: FONTS["mb"] = FONTS["m"]
-    if "NotebookMonoItalic" not in registered: FONTS["mi"] = FONTS["m"]
-    directory = Path(reportlab.__file__).parent / "fonts"
-    for name, filename in (("NotebookVera", "Vera.ttf"), ("NotebookVeraBold", "VeraBd.ttf"),
-                           ("NotebookVeraIt", "VeraIt.ttf"), ("NotebookVeraBI", "VeraBI.ttf")):
-        _register(name, str(directory / filename))
-    registered = set(pdfmetrics.getRegisteredFontNames())
-    if "NotebookTimes" not in registered:
-        FONTS.update({"r": "NotebookVera", "b": "NotebookVeraBold",
-                      "i": "NotebookVeraIt", "bi": "NotebookVeraBI"})
-    if "NotebookSongti" not in registered:
-        FONTS["songti"] = FONTS.get("r", "NotebookVera")
-    if "NotebookHeiti" not in registered:
-        FONTS["heiti"] = FONTS.get("b", "NotebookVeraBold")
-    return FONTS["r"], FONTS["b"]
+def _first_usable(name: str, chain) -> str | None:
+    for path, index, _cjk in chain:
+        if _register_once(name, path, index):
+            return name
+    return None
 
 
-@lru_cache(maxsize=1)
-def _cjk_fonts() -> tuple[str, ...]:
-    names = []
+def _load_fallbacks() -> tuple[str, ...]:
+    """Every CJK-capable face we could register, used per glyph when a role lacks one."""
+    names: list[str] = []
     with _FONT_LOCK:
-        for index, (filename, subfont) in enumerate(_CJK_CANDIDATES):
-            if not Path(filename).is_file():
+        for position, (path, index, _cjk) in enumerate(_FALLBACK_CJK):
+            name = f"NotebookCJK{position}"
+            if name in names:
                 continue
-            name = f"NotebookCJK{index}"
-            try:
-                if name not in pdfmetrics.getRegisteredFontNames():
-                    pdfmetrics.registerFont(TTFont(name, filename, subfontIndex=subfont))
-            except (TTFError, OSError):
-                # An optional font may use unsupported PostScript outlines.
-                continue
-            names.append(name)
+            if _register_once(name, path, index):
+                if _has(ord("中"), name):
+                    names.append(name)
     return tuple(names)
+
+
+def _has(codepoint: int, font: str) -> bool:
+    try:
+        glyphs = getattr(pdfmetrics.getFont(font).face, "charToGlyph", None)
+    except Exception:
+        return False
+    return None if glyphs is None else bool(glyphs.get(codepoint))
+
+
+@lru_cache(maxsize=8)
+def resolve_fonts(profile: str = DEFAULT_PROFILE) -> dict:
+    """Turn a profile name into concrete faces, plus a record of what actually loaded.
+
+    Cached per profile because the result is immutable: the old module-level mutable
+    FONTS dict meant two reports rendered with different fonts could corrupt each
+    other inside one process.
+    """
+    if profile == "auto":
+        profile = DEFAULT_PROFILE
+    if profile not in FONT_PROFILES:
+        raise ValueError(f"Unknown font profile {profile!r}; choose one of "
+                         f"{sorted(FONT_PROFILES)} or 'auto'")
+    spec = FONT_PROFILES[profile]
+    resolved: dict[str, str] = {}
+    used: dict[str, str] = {}
+    notes: list[str] = []
+
+    def take(role: str, name: str, chain) -> None:
+        found = _first_usable(name, chain)
+        if found:
+            resolved[role] = found
+            used[role] = Path(chain[0][0]).name if found else ""
+        else:
+            notes.append(f"{role}: profile face unavailable, fell back")
+
+    take("r", "NotebookSerif", spec["latin"])
+    take("b", "NotebookSerifBold", spec["latin_bold"])
+    take("i", "NotebookSerifItalic", spec["latin_italic"])
+    take("bi", "NotebookSerifBoldItalic", spec["latin_bold_italic"])
+    take("m", "NotebookMonoR", spec["mono"])
+    for role, suffix in (("mb", "Bold"), ("mi", "Italic")):
+        base = resolved.get("m")
+        resolved[role] = base if base else ""
+    take("songti", "NotebookCJKBody", spec["cjk"])
+    take("heiti", "NotebookCJKHeavy", spec["cjk_bold"])
+
+    # Latin slots fall back to bundled Vera, which ships inside reportlab itself.
+    directory = Path(reportlab.__file__).parent / "fonts"
+    vera = (("NotebookVera", "Vera.ttf"), ("NotebookVeraBold", "VeraBd.ttf"),
+            ("NotebookVeraIt", "VeraIt.ttf"), ("NotebookVeraBI", "VeraBI.ttf"))
+    for name, filename in vera:
+        _register_once(name, str(directory / filename), None)
+    registered = set(pdfmetrics.getRegisteredFontNames())
+    for role, substitute in (("r", "NotebookVera"), ("b", "NotebookVeraBold"),
+                             ("i", "NotebookVeraIt"), ("bi", "NotebookVeraBI")):
+        if not resolved.get(role) or resolved[role] not in registered:
+            resolved[role] = substitute if substitute in registered else "Helvetica"
+            notes.append(f"{role}: fell back to {resolved[role]}")
+    if not resolved.get("m") or resolved["m"] not in registered:
+        resolved.update({"m": "Courier", "mb": "Courier-Bold", "mi": "Courier-Oblique"})
+        notes.append("mono: fell back to Courier")
+
+    fallbacks = _load_fallbacks()
+    # A CJK role with no CJK glyphs would silently print tofu; borrow a fallback face.
+    for role in ("songti", "heiti"):
+        face = resolved.get(role)
+        if not face or not _has(ord("中"), face):
+            borrowed = next((candidate for candidate in fallbacks if _has(ord("中"), candidate)), None)
+            if borrowed:
+                resolved[role] = borrowed
+                notes.append(f"{role}: borrowed {borrowed}")
+            else:
+                resolved[role] = resolved["r"]
+                notes.append(f"{role}: no CJK face on this machine; Chinese will show as [U+XXXX]")
+
+    return {"profile": profile, "fonts": resolved, "fallbacks": fallbacks,
+            "cjk_available": any(_has(ord("中"), resolved.get(role) or "") for role in ("songti", "heiti")),
+            "notes": notes,
+            "used": {role: resolved.get(role, "") for role in ("r", "b", "i", "bi", "m", "mb", "mi", "songti", "heiti")}}
+
+
+def font_report(profile: str = DEFAULT_PROFILE) -> dict:
+    """Compact description for the report record and the preflight probe."""
+    info = resolve_fonts(profile)
+    return {"profile": info["profile"], "fonts": dict(info["used"]),
+            "cjk_available": info["cjk_available"], "notes": list(info["notes"]),
+            "profiles": sorted(FONT_PROFILES)}
+
+
+def _base_fonts(profile: str = DEFAULT_PROFILE) -> tuple[str, str]:
+    """Kept for callers that only need the body pair."""
+    info = resolve_fonts(profile)
+    return info["fonts"]["r"], info["fonts"]["b"]
+
+
+def _cjk_fonts() -> tuple[str, ...]:
+    """Every registered CJK fallback face."""
+    return _load_fallbacks()
+
+
+# Compatibility alias: the resolved default profile. Read-only in practice; new code
+# must go through resolve_fonts() so per-report fonts stay independent.
+FONTS = resolve_fonts(DEFAULT_PROFILE)["fonts"]
 
 
 _KEYWORDS = {
@@ -186,9 +329,12 @@ def _supports(font: str, character: str) -> bool:
 
 
 class _Layout:
-    def __init__(self, canvas: Canvas):
+    def __init__(self, canvas: Canvas, profile: str = DEFAULT_PROFILE):
         self.canvas = canvas
-        self.regular, self.bold = _base_fonts()
+        self.fonts = resolve_fonts(profile)
+        self.faces = self.fonts["fonts"]
+        self.fallbacks = self.fonts["fallbacks"]
+        self.regular, self.bold = self.faces["r"], self.faces["b"]
         self.width, self.height = A4
         self.margin = 48.0
         self.usable = self.width - 2 * self.margin
@@ -202,7 +348,7 @@ class _Layout:
 
     def _footer(self) -> None:
         """Page number in the CJK body face: Times has no CJK glyphs and would emit .notdef."""
-        self.canvas.setFont(FONTS.get("songti", self.regular), 8)
+        self.canvas.setFont(self.faces.get("songti", self.regular), 8)
         self.canvas.setFillGray(0.45)
         self.canvas.drawRightString(self.width - self.margin, 25, f"第 {self.page} 页")
         self.canvas.setFillGray(0)
@@ -323,18 +469,20 @@ class _Layout:
         if cached is not None:
             return cached
         key_style = "b" if "b" in style else "r"
+        if style == "m":
+            key_style = "m"
         if unicodedata.category(character).startswith("C"):
             font = None
         elif _is_cjk(character):
-            font = FONTS["heiti"] if key_style == "b" else FONTS["songti"]
+            font = self.faces["heiti"] if key_style in ("b", "bi") else self.faces["songti"]
             if not _supports(font, character):
-                font = next((c for c in _cjk_fonts() if _supports(c, character)), None)
+                font = next((c for c in self.fallbacks if _supports(c, character)), None)
         else:
-            font = FONTS.get(key_style, FONTS["r"])
+            font = self.faces.get(key_style, self.faces["r"])
             if not _supports(font, character):
-                font = next((c for c in _cjk_fonts() if _supports(c, character)), None)
+                font = next((c for c in self.fallbacks if _supports(c, character)), None)
         if font is None:
-            fallback = FONTS.get(key_style, FONTS["r"])
+            fallback = self.faces.get(key_style, self.faces["r"])
             replacement = self._substitute(character)
             if replacement != character:
                 self.transliterated.add(ord(character))
@@ -832,7 +980,7 @@ def _figure_image(path: Path) -> Image.Image:
 
 
 def render_report(markdown_text: str, output_path: Path, *, title: str,
-                  figures: list[dict] = []) -> dict:
+                  figures: list[dict] = [], font_profile: str | None = None) -> dict:
     """Render a report, raising on invalid inputs or rendering/write failures.
 
     Limits: 200k source characters, 20 figures, 1024 title characters, 4000
@@ -853,6 +1001,8 @@ def render_report(markdown_text: str, output_path: Path, *, title: str,
         raise ValueError("title must contain 1-1024 characters")
     if not isinstance(figures, list):
         raise TypeError("figures must be a list")
+    if font_profile is not None and not isinstance(font_profile, str):
+        raise TypeError("font_profile must be a string or None")
     if len(figures) > MAX_FIGURES:
         raise ValueError(f"Report exceeds {MAX_FIGURES} figures")
     output_path = Path(output_path)
@@ -877,7 +1027,7 @@ def render_report(markdown_text: str, output_path: Path, *, title: str,
     canvas = Canvas(buffer, pagesize=A4, pageCompression=1, invariant=1)
     canvas.setTitle(title)
     canvas.setAuthor("Levin Research Notebook")
-    layout = _Layout(canvas)
+    layout = _Layout(canvas, font_profile or DEFAULT_PROFILE)
     layout.rich(" ".join(title.splitlines()), size=19, after=8, bold=True)
 
     lines = markdown_text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
@@ -1032,4 +1182,8 @@ def render_report(markdown_text: str, output_path: Path, *, title: str,
     return {"pdf_path": str(output_path), "pages": pages,
             "renderer": f"reportlab-{reportlab.Version}",
             "unsupported_codepoints": [f"U+{point:04X}" for point in sorted(layout.unsupported)],
-            "transliterated_codepoints": [f"U+{point:04X}" for point in sorted(layout.transliterated)]}
+            "transliterated_codepoints": [f"U+{point:04X}" for point in sorted(layout.transliterated)],
+            "fonts": {"profile": layout.fonts["profile"],
+                      "resolved": dict(layout.fonts["used"]),
+                      "cjk_available": layout.fonts["cjk_available"],
+                      "notes": list(layout.fonts["notes"])}}

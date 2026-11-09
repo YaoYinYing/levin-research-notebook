@@ -5,6 +5,7 @@ Optional pypdf assertions check page contents without making it a runtime depend
 """
 from __future__ import annotations
 
+import copy
 import importlib.util
 import os
 from pathlib import Path
@@ -99,9 +100,53 @@ class ReportingTests(unittest.TestCase):
         self.assertIn("__import__", extracted)
         self.assertIn("<img", extracted)
 
+    def test_font_profiles_resolve_and_report_themselves(self):
+        for profile in ("scientific-cjk", "cjk-sans", "latin-only"):
+            with self.subTest(profile=profile):
+                info = reporting.font_report(profile)
+                self.assertEqual(info["profile"], profile)
+                for role in ("r", "b", "i", "bi", "m", "songti", "heiti"):
+                    self.assertTrue(info["fonts"][role], f"{role} unresolved in {profile}")
+                self.assertIn("cjk_available", info)
+                self.assertIn("notes", info)
+
+    def test_unknown_font_profile_is_rejected(self):
+        # A typo must fail loudly rather than silently render with the default.
+        with self.assertRaises(ValueError):
+            reporting.resolve_fonts("no-such-profile")
+
+    def test_auto_profile_is_accepted(self):
+        self.assertEqual(reporting.resolve_fonts("auto")["profile"], reporting.DEFAULT_PROFILE)
+
+    def test_resolved_fonts_are_per_call_not_global(self):
+        # Two reports with different profiles in one process must not share state.
+        first = reporting.resolve_fonts("scientific-cjk")["fonts"]
+        second = reporting.resolve_fonts("cjk-sans")["fonts"]
+        self.assertIsNot(first, second)
+        self.assertEqual(reporting.resolve_fonts("scientific-cjk")["fonts"]["songti"],
+                         first["songti"])
+
+    def test_render_report_reports_the_fonts_it_used(self):
+        result = self.render("字体回报 \u4e2d\u6587")
+        fonts = result["fonts"]
+        self.assertEqual(fonts["profile"], reporting.DEFAULT_PROFILE)
+        self.assertIn("songti", fonts["resolved"])
+        self.assertIn("cjk_available", fonts)
+        self.assertIsInstance(fonts["notes"], list)
+
+    def test_explicit_profile_reaches_the_renderer(self):
+        result = self.render("正文 with \u4e2d\u6587", font_profile="cjk-sans")
+        self.assertEqual(result["fonts"]["profile"], "cjk-sans")
+
     def test_unicode_fallback_reports_unavailable_glyphs(self):
-        with patch.object(reporting, "_cjk_fonts", return_value=()), \
-                patch.dict(reporting.FONTS, {"songti": "NotebookVera", "heiti": "NotebookVeraBold"}):
+        # Simulate a host with no CJK face at all: the CJK roles must degrade to a
+        # Latin face and the affected characters must be reported, not drawn as tofu.
+        baseline = reporting.resolve_fonts("scientific-cjk")
+        starved = copy.deepcopy(baseline)
+        starved["fonts"].update({"songti": "NotebookVera", "heiti": "NotebookVeraBold"})
+        starved["fallbacks"] = ()
+        starved["cjk_available"] = False
+        with patch.object(reporting, "resolve_fonts", return_value=starved):
             result = self.render("Café α β 中文 \U0001f9ec")
         self.assertIn("U+4E2D", result["unsupported_codepoints"])
         self.assertIn("U+1F9EC", result["unsupported_codepoints"])

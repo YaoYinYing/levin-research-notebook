@@ -10,7 +10,15 @@ def preflight(context, arguments):
         try: checks.append({'name':package,'ready':True,'version':importlib.metadata.version(package)})
         except importlib.metadata.PackageNotFoundError: checks.append({'name':package,'ready':False})
     ready=all(c['ready'] for c in checks)
-    return {'ready':ready,'runtime_ready':ready,'model_ready':True,'source_ready':True,'checks':checks,'execution_location':context.execution_location,'integration':'skill checkpoints; no automatic lifecycle hook','renderer':'reportlab','remote_policy':'references only; notebook writes use selected filesystem'}
+    # Font availability has to be visible before a report is rendered: a host with no
+    # CJK face produces [U+XXXX] boxes, and that is not something to discover from the PDF.
+    fonts=None
+    try:
+        from reporting import font_report
+        fonts=font_report('scientific-cjk')
+    except Exception as error:
+        fonts={'error':str(error)}
+    return {'ready':ready,'runtime_ready':ready,'model_ready':True,'source_ready':True,'checks':checks,'execution_location':context.execution_location,'integration':'skill checkpoints; no automatic lifecycle hook','renderer':'reportlab','fonts':fonts,'remote_policy':'references only; notebook writes use selected filesystem'}
 
 
 def invoke(operation, arguments):
