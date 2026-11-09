@@ -6,157 +6,53 @@ description: "Maintain scientific experiment records, register evidence and exec
 # Research notebook
 
 Use for computational or experimental scientific tasks whose evidence must survive the conversation.
-This is a record-lifecycle pipeline plugin; it records work and does not execute scientific jobs.
-Logical MCP alias server_name: "levin-research-notebook__runner"; the enabled deployment is
-`levin-research-notebook__runner__local`. v0.x is local-only: no Remote SSH transfer, so do not
-address a Remote job workspace for notebook writes (record HPC data as external references instead).
+This is a record-lifecycle pipeline plugin: it records work, it does not execute scientific jobs.
 
-## Start or resume
+Logical MCP alias `levin-research-notebook__runner`; the enabled deployment is
+`levin-research-notebook__runner__local`. v0.x is local-only — no Remote SSH transfer, so never
+address a Remote job workspace for notebook writes (register HPC data as external references).
 
-1. Call `research_record_init` once with the actual project `workspace_dir`, stable `task_id`,
-   `agent_id`, title, objective, a priori hypothesis and `expected_result` when one exists. The
-   report opens with a three-sentence summary (what / why / expected) and a fact table built from
-   these fields plus the recorded runs. Also pass `purpose` (why this follows from earlier work),
-   `implementer` (`{kind: "user"|"agent", name, model}`) and `environment_location` (the uv/conda
-   environment path actually used). For a campaign of several records pass
-   `derived_from: [parent_experiment_id]`; an undeclared cross-record artifact reference is warned about.
-2. Keep the returned `experiment_id`. Repeated task identity resumes the same record only when
-   `title` and `objective` match byte-exactly; otherwise the tool rejects the call rather than
-   silently creating a duplicate. Recover the exact stored strings with `research_record_index`
-   (its rows return both) or by reading `manifest.json`, then resume with those values verbatim.
-3. Put all generated temporary work under the returned `levin_scratch/<task_id>/<agent_id>/`.
-   Preserve raw data outside scratch. Persistent scripts, small data and figures belong under
-   `levin_notebook/experiments/<experiment_id>/`. Keep original raw files in place.
-4. Read `record.md` and the relevant manifest fields when resuming; do not rely on chat memory.
+## Read only the branch the current stage needs
 
-## During work
-
-- Append meaningful methods, observations, failures and decision changes with
-  `research_record_checkpoint`; avoid per-command narration or full log dumps. Give each one a short
-  `title`: sections are rendered as numbered subsections (`1. <title>`) grouped under Methods,
-  Observations, Failures and Conclusions. Use `replica`/`retry` for repeats, `refers_to` to point at
-  an earlier numbered entry instead of restating a method, and `when_note` only when a run spans
-  dates (it renders as a quoted line; timestamps never appear in headings).
-- Use `research_record_register_artifact` for raw/input references, scripts, derived data,
-  tables, figures and logs. Registration reads files without copying or changing them.
-  Register a path only after the file exists; if it is still absent the record keeps
-  `availability: missing` and validate reports an error until you register the same location and
-  role again, which refreshes that entry in place instead of creating a duplicate. A path outside
-  `workspace_dir` (or a scheme URL) is accepted and hashed, but validate warns that the record is
-  not portable — prefer keeping evidence inside the workspace or registering it as an explicit
-  external reference. Copy an analysis
-  script into the experiment folder and run that copy, so the registered checksum matches the code
-  that produced the outputs.
-- Use `research_record_register_run` for local, Levin Job and Slurm provenance. Record the executing
-  `host` (auto-filled for `local`/`levin`, required for `slurm`/`external`), command, parameters,
-  effective seeds, software versions, inputs, outputs and failure information.
-  Submit work with existing Levin/compute tools; this plugin has no scheduler.
-- Register artifacts and runs before referencing their returned IDs in a checkpoint; a guessed ID is
-  rejected. Every reference field (`input_ids`, `script_id`, `run_id`, `evidence_ids`, `run.id`)
-  accepts either the server id or the `reference_id` you registered it with, so give artifacts and
-  runs your own stable alias and use it everywhere. `evidence_ids` takes artifacts and runs only —
-  never checkpoint ids. Never edit old text: correct a `conclusion`, `observation` or `method` by
-  appending a new checkpoint with `supersedes: <checkpoint_id>`; the original stays visible, struck
-  through.
-- Batch a meaningful observation into one checkpoint. Reuse a `request_id` only on an identical
-  retry; a changed payload needs a new one. Update a run by passing its id as `run.id`.
-- Remote raw data stays remote: compute there, pull back only lightweight results, and register
-  the original with `source_origin: remote_copy` plus `remote_host` and `remote_path` (an `ssh://`
-  or `s3://` path is normal — nothing is contacted). Landing a copy of a remote `raw`/`input`
-  original also needs `remote_copy_permission` naming who authorized it, and is refused for large
-  originals. Large pulled-back results warn too; reference them instead.
-- Never overwrite original data, upload private data, silently fetch external references,
-  remove scratch or commit large datasets. Completion implies no retention policy. Keep secrets
-  out of commands, metadata and URLs; URLs with userinfo/query strings are rejected.
-- Artifact and run IDs connect evidence. Conclusions require evidence IDs. A figure needs its
-  producing `run_id`; `input_ids` and `script_id` come from that run when you omit them, so
-  register run → figure, then patch the run's `output_ids`. Roles include `deliverable` for a
-  finished human-facing artefact (briefing, document) as distinct from a `derived` intermediate.
-  Preserve units, replicates and conditions in artifact metadata.
-- Re-registering a location whose checksum was never recorded refreshes that entry in place, including
-  raw entries; a raw location whose checksum no longer matches is rejected. After any post-finalization
-  change `validate` warns the report is stale — re-finalize when it must reflect the change.
-- In `register_run`, passing `run.id` means update; omit it to create. Run objects accept only the
-  declared fields, so link scripts through artifacts, not the run.
-- A blocked `finalize` keeps `execution_status` unchanged and records `render_state` `blocked`; only a
-  passing gate commits `success` or `failed`, and only a successful finalization is memoized.
-  Registration warnings about a missing checksum mean unverified evidence, never integrity proof.
-
-## Report outline (what the PDF will contain)
-
-| Section | Filled from |
+| Stage | Load |
 |---|---|
-| Summary + fact table | objective / purpose / expected_result, implementer, runs, environment_location |
-| 1. 实验目的 | `purpose`(fallback `hypothesis`) and objective |
-| 2. 实验策略 | `strategy: [{title, text}]` → numbered 2.1, 2.2 … |
-| 3. 实验方法和计划 | `method_plan` bullets + method checkpoints numbered 3.1, 3.2 … (replica/retry/refers_to) |
-| 4. 实验材料 | hosts/arch, dataset and script artifacts, `materials`, software versions, non-default params |
-| 5. 实验结果 | 5.1 看到了什么 / 5.2 没看到什么 / 5.3 意外与处置 from `results.*`, observation and failure checkpoints; 5.4 量纲与单位核对 from `quantities` |
-| 6. 实验结论和不足 | conclusion checkpoints (with `supersedes`), `interpretation`, `limitations` |
-| 7. 下一步计划 | `plans` |
-| 8. 经验教训 | `lessons` |
-| 9. 数据空间统计 | measured `levin_notebook`/`levin_scratch` + `remote_space` for HPC hosts |
-| 尾注 / 工件与溯源 | `footnotes`, then artifacts on a new page |
+| First call, resuming, workspace layout | [start](references/start.md) |
+| Checkpoints, artifacts, runs, references, remote data | [evidence](references/evidence.md) |
+| Report sections, numbers, math, figures, fonts | [report](references/report.md) |
+| Citing papers, BibTeX, reference list | [bibliography](references/bibliography.md) |
+| validate, finalize, space accounting, pruning | [finalize](references/finalize.md) |
+| Handing figure work to a worker | [visualization brief](references/visualization-agent.md) |
+| Limits, failure modes, recovery | [limits](references/limits.md) |
+| Exact argument shapes | [calls.json](examples/calls.json) |
 
-### Numbers, math, figures and editable sources
+Do not read the whole tree up front. A record-lifecycle task touches start → evidence → report →
+finalize, in that order, and each file is short enough to load when its stage begins.
 
-Put numeric results in `quantities` (`{name, value, unit, uncertainty?}`): table 5.4 checks
-each unit against the quantity's dimension, blocks a wrong one (temperature in `ps`) and warns
-on an unconventional one, without ever converting your value. `$…$` / `$$…$$` render offline
-via matplotlib mathtext (no TeX install). Place a plot beside its claim with `\\figure{artifact-id}`
-instead of dumping all of them at `\\figures`. `finalize` writes `report.md` (authority),
-`report.qmd` and a standalone `report.tex`. Details: [report format](references/report-format.md).
+## The five stages
 
-### Literature index from BibTeX
+1. `research_record_init` — once per task identity; returns `experiment_id` and a scratch directory.
+2. `research_record_checkpoint` — methods, observations, failures, evidence-linked conclusions.
+3. `research_record_register_artifact` / `research_record_register_run` — the evidence itself.
+4. `research_record_validate` — structural validity now plus every gate `finalize` will apply.
+5. `research_record_finalize` — sources, PDF, space accounting; then `prune_reports` if needed.
 
-For `literature_review` (and any record that cites papers) pass a `.bib` instead of typing entries:
+## Invariants — these override convenience
 
-```text
-research_record_finalize(..., bibtex_path="data/library.bib",
-  references=[{"id": "Doe2024", "evidence_level": "同行评议", "read_full_text": true}])
-```
+- Never invent a result, number, citation or figure. A conclusion needs evidence ids; a failure
+  needs a reason, and vague text (`无结果`, `failed`, `error`) is rejected.
+- Raw evidence is immutable. Never overwrite an original, work inside `levin_scratch/`, or land a
+  large remote original locally without an explicit permission recorded on the artifact.
+- Units are checked, never converted. A value you recorded is the value the report prints.
+- Nothing is deleted automatically: scratch is retained, revisions are kept, and only
+  `research_record_prune_reports` removes old PDF snapshots, on explicit call.
+- `ok` is not completion. Read `finalized`, `report.render_state` and `validation`; a blocked attempt
+  leaves a source-only report folder with no PDF.
+- You choose `font_profile` from the report's content; see [report](references/report.md#fonts).
 
-`bibtexparser` v2 parses the file; `references` then *overrides* fields on a matching citekey and
-adds judgement the .bib cannot carry. Follow the EndNoteTweak hygiene rules: prefer a DOI, fall back
-to the title, keep the export's own annotation, and never pretend messy metadata is clean — entries
-missing DOI/year/title/venue/authors are listed under 需人工核对的元数据 and repeated in the
-参考文献 list. `bibtex` accepts inline BibTeX for the same parser. Link fetched structures or
-re-computations with `reference_id` on the artifact or run so 复算与核验 ties each result to a paper.
+## Boundaries
 
-Use `[^label]` inline and a matching `footnotes` entry for side remarks.
-
-**You choose `font_profile`** (scientific-cjk / cjk-sans / latin-only) — see
-[report format](references/report-format.md#fonts); check `preflight.fonts.cjk_available` first.
-Failure text must state what went wrong: `无结果` / `failed` / `error` shorthand is rejected.
-
-1. Assess whether visualization helps answer the objective. Record an explicit reason either way.
-2. When justified, delegate to a dedicated scientific-visualization worker using
-   [the specialist brief](references/visualization-agent.md). Give verified dataset references,
-   the exact experiment, acceptance criteria and one bounded output scope. The parent accepts
-   scientific interpretation. Do not create a decorative figure to satisfy a requirement.
-3. Call `research_record_validate`. `valid` is structural validity now; `final_readiness.errors`
-   lists every gate `finalize` will apply, so resolve both before finalizing. External/HPC references
-   stay explicitly unverified; do not equate schema validity with reproduction.
-5. Call `research_record_finalize` with terminal execution status (`success` or `failed`),
-   interpretation, limitations, visualization assessment including reviewer and figure IDs, plus
-   `lessons` and `plans`. Lessons and future plans close the record; leaving them empty is allowed
-   but reported as "None recorded".
-   Check `finalized`, `report.render_state` and `validation`; `ok` alone is not completion, and a
-   blocked or render-failed attempt still leaves a source-only `reports/<id>/` folder with no PDF.
-6. Artifacts open on a new page after a divider, with digests and paths in code blocks and data in
-   tables. Read `space_usage` from the finalize result (or `record.md` → *Space usage*): it reports
-   `levin_notebook` and `levin_scratch` bytes/files and the change since `research_record_init`.
-   Report those numbers; state that scratch is retained, never auto-deleted. Each finalize copies a
-   full PDF, so after repeated finalizes call `research_record_prune_reports` (add `dry_run: true`
-   first) to drop older snapshots — revisions and artifacts are never touched.
-7. Return concise evidence paths and remaining limitations. A successful execution can still have an
-   inconclusive or negative scientific interpretation.
-
-## Boundaries and recovery
-
-Limits and recovery: [limits.md](references/limits.md). Stage sequence:
-[workflow](../../workflows/standard-research-notebook.md). Argument shapes: [calls.json](examples/calls.json).
-No automatic task hooks or native agent-type installation are claimed; the skill drives checkpoints.
-If MCP is unavailable, read `levin_notebook` JSON/Markdown with ordinary file tools, or call the
-portable `mcp/runner/notebook.py` classes from Python; there is no standalone CLI yet.
-Preview calls only validate schema shape; never report them as performed experiments.
+No automatic task hooks or native agent-type installation are claimed; this skill drives the
+checkpoints. There is no scheduler — submit compute with Levin/existing tools. If MCP is unavailable,
+read `levin_notebook` JSON/Markdown with ordinary file tools or import `mcp/runner/notebook.py`, whose
+`Notebook` class is the same code the tools call. `preview: true` validates argument shape only:
+never report a preview as a performed experiment.

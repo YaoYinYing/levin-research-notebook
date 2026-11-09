@@ -1,15 +1,16 @@
 # Levin Research Notebook
 
-A personal Levin plugin (v0.11.4) that keeps scientific evidence alive past the chat window.
+A personal Levin plugin (v0.11.5) that keeps scientific evidence alive past the chat window.
 It is a **record-lifecycle** plugin over a real filesystem workspace: it records what was done,
 what produced it, and what was concluded. It does **not** run your science — compute stays in
 Levin Jobs, Slurm, or your own process, and this plugin captures their provenance.
 
 ## What it does
 
-- **Record skill** — `skills/levin-research-notebook-runtime/SKILL.md` drives the agent through
-  init → checkpoints → artifact/run registration → validate → finalize, with the stage chain in
-  `workflows/standard-research-notebook.md` and limits/recovery in `references/limits.md`.
+- **Record skill** — a short entry point that loads one branch per stage instead of the whole
+  manual. `SKILL.md` carries the five stages and the invariants; `references/` splits into
+  `start.md` · `evidence.md` · `report.md` · `bibliography.md` · `finalize.md` · `limits.md`, plus
+  the visualization brief, and `workflows/standard-research-notebook.md` holds the stage chain.
 - **Deterministic MCP tools** — eight `research_record_*` tools that mutate one canonical
   `manifest.json` per experiment. Same inputs, same filesystem result; no LLM in the write path.
 - **Delegated visualization** — when figures help the objective, the parent hands the specialist

@@ -25,28 +25,26 @@
   marks `truncated: true` instead of under-reporting silently. Experiments created before 0.4.0 have
   no baseline, so the delta is reported as unavailable.
 
-## Glyph coverage
 
-- `validate` now checks the text that will be rendered (record view plus every checkpoint body)
-  against the faces the chosen profile actually resolves, and warns per missing codepoint with a
-  short context snippet. Prose is checked against the serif/CJK faces and code blocks against the
-  mono face separately: Menlo has `⇒`, so checking prose against mono reported a missing glyph as
-  fine while the PDF still printed tofu. Sub/superscripts are transliterated to caret notation and
-  are not reported.
-- The warning is advisory, not blocking: you can still finalize, and `unsupported_codepoints` in the
-  render result remains the authoritative post-render record.
-- Because checkpoints are append-only, the fix is to reword before finalizing or supersede the
-  checkpoint (`supersedes`) — not to edit the old text.
+## Bibliography parsing limits
 
-## Literature index
+Format, hygiene rules and the reference-list layout live in [bibliography](bibliography.md). What the
+parser itself will and will not do:
 
-- BibTeX is read with `bibtexparser==2.1.0` from a workspace `.bib` (`bibtex_path`) or inline text
-  (`bibtex`). At most 2000 entries per parse; unparsable blocks are reported as `bibtex_warnings`
-  rather than dropped silently.
-- Only metadata is read. Attachments referenced by `file = {...}` are never opened or copied, and no
-  network request is made to resolve a DOI. DOI presence is recorded, not verified.
-- `references` entries override a matching citekey field by field; annotations the export carries
-  (`note`, `annote`, `abstract`, `keywords`, `file`) become `key_findings`.
+- `bibtexparser==2.1.0` reads a workspace `.bib` (`bibtex_path`) or inline text (`bibtex`). At most
+  2000 entries per parse; unparsable blocks are reported as `bibtex_warnings`, never dropped silently.
+- Only metadata is read. An attachment named by `file = {...}` is never opened or copied, and no
+  network request resolves a DOI: DOI presence is recorded, not verified.
+- `references` overrides a matching citekey field by field; annotations the export already carries
+  (`note`, `annote`, `abstract`, `keywords`, `file`) become `key_findings`. Derived metadata
+  (`metadata_issues`) is recomputed and cannot be overridden by stale hand-written text.
+
+Behaviour that is documented where it is used, not here:
+
+- reference alias resolution, figure inheritance and `role=deliverable` — [evidence](evidence.md)
+- glyph coverage and `unsupported_codepoints` — [report](report.md#glyph-coverage)
+- report snapshots, `request_id`, staleness and `prune_reports` — [finalize](finalize.md)
+- `derived_from`, `index(include_summary)` and `index` search semantics — below
 
 ## Practical limits
 
@@ -77,23 +75,6 @@
   rejected; this is not a sandbox against a malicious process racing filesystem replacement.
 - `validate` separates `valid` (structural, now) from `final_readiness.errors` (what `finalize`
   will require). A `finalize` blocked by a failed gate does not commit terminal execution status.
-- Every reference field accepts either the server id or the caller's own `reference_id`:
-  `artifact.input_ids`, `artifact.script_id`, `artifact.run_id`, `run.input_ids`, `run.output_ids`,
-  `run.id` and `checkpoint.evidence_ids`. Resolution is by exact id first, then by alias, so give
-  artifacts and runs a stable alias at registration and never copy uuids. `evidence_ids` accepts
-  artifacts and runs only — a checkpoint id is not evidence, and the error says so.
-- A `figure` needs a producing `run_id`; when `input_ids`/`script_id` are omitted they are inherited
-  from that run, which resolves the old create-run-then-patch-a-figure ordering problem. A figure
-  with no run at all is still rejected.
-- `role=deliverable` marks a finished artefact meant for a human (a briefing, a document). `derived`
-  stays the intermediate computation result; neither name is used by `finalize`'s own PDF.
-- `index(include_summary: true)` adds per-record counts — artifacts by role, runs by status,
-  checkpoints by kind, quantities, references, reports, `derived_from` — so completeness can be
-  confirmed in one call instead of opening `manifest.json`.
-- `derived_from` (on `init`) records which experiments a record derives from. `validate` warns when
-  an artifact location resolves to another experiment's `levin_notebook/experiments/exp-.../` and
-  that parent is not declared, and when a declared parent has no manifest in this workspace. The
-  warning is advisory: the reference is legal, the hierarchy was just undocumented.
 - `index` matches every whitespace term (AND, max 8) over titles, objectives, hypotheses,
   checkpoints, interpretation, limitations, artifact locations/descriptions/ids and run
   commands/failures/parameters/environment. It is substring search over a capped 200k haystack, not
