@@ -244,6 +244,68 @@ def font_report(profile: str = DEFAULT_PROFILE) -> dict:
             "profiles": sorted(FONT_PROFILES)}
 
 
+_SUBSTITUTABLE = set("₀₁₂₃₄₅₆₇₈₉₊₋⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻")
+
+
+@lru_cache(maxsize=4)
+def _faces_for(profile: str, kind: str = "prose") -> tuple[str, ...]:
+    """Faces that actually draw this kind of text, mirroring _Layout._styled.
+
+    Prose falls back through the Latin faces and the CJK fallbacks; a code block uses
+    the mono face only. Checking prose against mono made the probe useless: Menlo has
+    ⇒, so a ⇒ in prose passed the probe and still rendered as tofu.
+    """
+    info = resolve_fonts(profile)
+    roles = ("m", "mb", "mi") if kind == "code" else ("r", "b", "i", "bi", "songti", "heiti")
+    faces = [info["fonts"].get(role) or "" for role in roles]
+    if kind != "code":
+        faces += list(info["fallbacks"])
+    return tuple(dict.fromkeys(face for face in faces if face))
+
+
+def _split_code(text: str) -> tuple[str, str]:
+    """Prose with fenced blocks removed, plus the fenced blocks themselves."""
+    fences = re.findall(r"^```[^\n]*\n(.*?)^```\s*$", text or "", re.S | re.M)
+    prose = re.sub(r"^```[^\n]*\n.*?^```\s*$", "", text or "", flags=re.S | re.M)
+    return prose, "\n".join(fences)
+
+
+def check_glyphs(text: str, profile: str = DEFAULT_PROFILE) -> list[dict]:
+    """Characters no face in this profile can draw, with a short context snippet.
+
+    Called from `validate` so a missing glyph is reported before finalizing rather
+    than discovered in a delivered PDF. Sub/superscripts are transliterated to caret
+    notation, so they are not reported here.
+    """
+    prose, code = _split_code(text)
+    prose_faces, code_faces = _faces_for(profile, "prose"), _faces_for(profile, "code")
+    missing: dict[int, int] = {}
+    for character in prose:
+        if character in "\n\t" or character in _SUBSTITUTABLE:
+            continue
+        if unicodedata.category(character).startswith("C"):
+            continue
+        if any(_supports(face, character) for face in prose_faces):
+            continue
+        missing[ord(character)] = missing.get(ord(character), 0) + 1
+    for character in code:
+        if character in "\n\t" or unicodedata.category(character).startswith("C"):
+            continue
+        if any(_supports(face, character) for face in code_faces):
+            continue
+        missing[ord(character)] = missing.get(ord(character), 0) + 1
+    findings = []
+    for point, count in sorted(missing.items()):
+        character = chr(point)
+        haystack = prose if character in prose else code
+        position = haystack.find(character)
+        start = max(0, position - 20)
+        context = haystack[start:position + 21].replace("\n", " ")
+        findings.append({"codepoint": f"U+{point:04X}", "character": character,
+                         "count": count, "context": context})
+    return findings
+
+
 def _base_fonts(profile: str = DEFAULT_PROFILE) -> tuple[str, str]:
     """Kept for callers that only need the body pair."""
     info = resolve_fonts(profile)

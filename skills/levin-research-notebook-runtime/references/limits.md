@@ -25,6 +25,19 @@
   marks `truncated: true` instead of under-reporting silently. Experiments created before 0.4.0 have
   no baseline, so the delta is reported as unavailable.
 
+## Glyph coverage
+
+- `validate` now checks the text that will be rendered (record view plus every checkpoint body)
+  against the faces the chosen profile actually resolves, and warns per missing codepoint with a
+  short context snippet. Prose is checked against the serif/CJK faces and code blocks against the
+  mono face separately: Menlo has `⇒`, so checking prose against mono reported a missing glyph as
+  fine while the PDF still printed tofu. Sub/superscripts are transliterated to caret notation and
+  are not reported.
+- The warning is advisory, not blocking: you can still finalize, and `unsupported_codepoints` in the
+  render result remains the authoritative post-render record.
+- Because checkpoints are append-only, the fix is to reword before finalizing or supersede the
+  checkpoint (`supersedes`) — not to edit the old text.
+
 ## Literature index
 
 - BibTeX is read with `bibtexparser==2.1.0` from a workspace `.bib` (`bibtex_path`) or inline text
@@ -64,6 +77,19 @@
   rejected; this is not a sandbox against a malicious process racing filesystem replacement.
 - `validate` separates `valid` (structural, now) from `final_readiness.errors` (what `finalize`
   will require). A `finalize` blocked by a failed gate does not commit terminal execution status.
+- Every reference field accepts either the server id or the caller's own `reference_id`:
+  `artifact.input_ids`, `artifact.script_id`, `artifact.run_id`, `run.input_ids`, `run.output_ids`,
+  `run.id` and `checkpoint.evidence_ids`. Resolution is by exact id first, then by alias, so give
+  artifacts and runs a stable alias at registration and never copy uuids. `evidence_ids` accepts
+  artifacts and runs only — a checkpoint id is not evidence, and the error says so.
+- A `figure` needs a producing `run_id`; when `input_ids`/`script_id` are omitted they are inherited
+  from that run, which resolves the old create-run-then-patch-a-figure ordering problem. A figure
+  with no run at all is still rejected.
+- `role=deliverable` marks a finished artefact meant for a human (a briefing, a document). `derived`
+  stays the intermediate computation result; neither name is used by `finalize`'s own PDF.
+- `index(include_summary: true)` adds per-record counts — artifacts by role, runs by status,
+  checkpoints by kind, quantities, references, reports, `derived_from` — so completeness can be
+  confirmed in one call instead of opening `manifest.json`.
 - `derived_from` (on `init`) records which experiments a record derives from. `validate` warns when
   an artifact location resolves to another experiment's `levin_notebook/experiments/exp-.../` and
   that parent is not declared, and when a declared parent has no manifest in this workspace. The

@@ -91,6 +91,35 @@ class CrossQuantityTests(unittest.TestCase):
         self.assertEqual(rows[1]["status"], "需修正")
         self.assertTrue(rows[1]["issues"])
 
+    def test_molarity_is_amount_per_volume_not_amount(self):
+        # A Kd in mol/L used to look like a wrong dimension because `L` was only a
+        # length symbol; it is now a real volume unit in its own namespace.
+        for unit in ("mol/L", "M", "mM", "uM", "nM"):
+            with self.subTest(unit=unit):
+                dims, _factor = units.parse_unit(unit)
+                self.assertEqual(dims, {"N": 1, "L": -3})
+        self.assertEqual(units.check({"name": "kd", "value": 4e-10, "unit": "mol/L"}), [])
+        self.assertEqual(units.check({"name": "km", "value": 120, "unit": "uM"}), [])
+        # ...but a bare amount is still a different quantity.
+        self.assertEqual(units.parse_unit("mol"), ({"N": 1}, 1.0))
+
+    def test_potential_is_a_family_with_volts(self):
+        dims, _factor = units.parse_unit("mV")
+        self.assertEqual(dims, {"M": 1, "L": 2, "T": -2, "Q": -1})
+        self.assertEqual(units.check({"name": "e_mid", "value": -0.45, "unit": "V"}), [])
+        # kJ/mol is not a potential; the tables must not conflate them.
+        wrong = units.check({"name": "midpoint_potential", "value": -450, "unit": "kJ/mol"})
+        self.assertIn("dimension_mismatch", [issue["code"] for issue in wrong])
+
+    def test_conventional_decades_of_a_unit_do_not_warn(self):
+        # mV and µM are how these are actually written; only a genuinely different
+        # scale (nm rmsd in a notebook that uses Å) is a convention difference.
+        for name, unit in (("midpoint_potential", "mV"), ("km", "uM"), ("kd", "nM")):
+            with self.subTest(name=name, unit=unit):
+                self.assertEqual(units.check({"name": name, "value": 1.0, "unit": unit}), [])
+        self.assertEqual([issue["code"] for issue in units.check({"name": "rmsd", "value": 2.1, "unit": "nm"})],
+                         ["unit_scale"])
+
     def test_values_are_never_rewritten(self):
         # The checker reports; it must not convert or normalise the stored number.
         quantity = {"name": "rmsd", "value": 0.21, "unit": "nm"}

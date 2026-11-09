@@ -52,22 +52,27 @@ address a Remote job workspace for notebook writes (record HPC data as external 
   effective seeds, software versions, inputs, outputs and failure information.
   Submit work with existing Levin/compute tools; this plugin has no scheduler.
 - Register artifacts and runs before referencing their returned IDs in a checkpoint; a guessed ID is
-  rejected. Never edit old text: correct a `conclusion`, `observation` or `method` by appending a new
-  checkpoint with `supersedes: <checkpoint_id>`; the original stays visible, struck through.
-- Batch a meaningful observation into one checkpoint. Use a stable `request_id` on retries;
-  changed payloads require new request IDs. Update a run with its returned `run_id` as `run.id`.
-- Remote raw data stays remote. Compute on the remote machine and bring back only lightweight
-  results; register the original with `source_origin: remote_copy` plus `remote_host` and
-  `remote_path` (an `ssh://`, `s3://` or Slurm path is the normal form — the plugin never contacts it).
-  Landing an actual copy of a remote `raw`/`input` original additionally requires
-  `remote_copy_permission` recording who authorized it, and is refused for large originals.
-  Large pulled-back results warn too: keep them on the remote host and reference them instead.
+  rejected. Every reference field (`input_ids`, `script_id`, `run_id`, `evidence_ids`, `run.id`)
+  accepts either the server id or the `reference_id` you registered it with, so give artifacts and
+  runs your own stable alias and use it everywhere. `evidence_ids` takes artifacts and runs only —
+  never checkpoint ids. Never edit old text: correct a `conclusion`, `observation` or `method` by
+  appending a new checkpoint with `supersedes: <checkpoint_id>`; the original stays visible, struck
+  through.
+- Batch a meaningful observation into one checkpoint. Reuse a `request_id` only on an identical
+  retry; a changed payload needs a new one. Update a run by passing its id as `run.id`.
+- Remote raw data stays remote: compute there, pull back only lightweight results, and register
+  the original with `source_origin: remote_copy` plus `remote_host` and `remote_path` (an `ssh://`
+  or `s3://` path is normal — nothing is contacted). Landing a copy of a remote `raw`/`input`
+  original also needs `remote_copy_permission` naming who authorized it, and is refused for large
+  originals. Large pulled-back results warn too; reference them instead.
 - Never overwrite original data, upload private data, silently fetch external references,
-  remove scratch or commit large datasets. No retention policy is inferred from task completion.
-  Keep secrets out of commands, metadata and URLs. URLs with userinfo/query strings are rejected.
-- Artifact and run IDs connect evidence. Conclusions require evidence IDs. Figure registration
-  requires dataset `input_ids`, `script_id` and `run_id`; register the run before its figures,
-  then update its `output_ids`. Preserve units, replicates and conditions in artifact metadata.
+  remove scratch or commit large datasets. Completion implies no retention policy. Keep secrets
+  out of commands, metadata and URLs; URLs with userinfo/query strings are rejected.
+- Artifact and run IDs connect evidence. Conclusions require evidence IDs. A figure needs its
+  producing `run_id`; `input_ids` and `script_id` come from that run when you omit them, so
+  register run → figure, then patch the run's `output_ids`. Roles include `deliverable` for a
+  finished human-facing artefact (briefing, document) as distinct from a `derived` intermediate.
+  Preserve units, replicates and conditions in artifact metadata.
 - Re-registering a location whose checksum was never recorded refreshes that entry in place, including
   raw entries; a raw location whose checksum no longer matches is rejected. After any post-finalization
   change `validate` warns the report is stale — re-finalize when it must reflect the change.
@@ -75,8 +80,7 @@ address a Remote job workspace for notebook writes (record HPC data as external 
   declared fields, so link scripts through artifacts, not the run.
 - A blocked `finalize` keeps `execution_status` unchanged and records `render_state` `blocked`; only a
   passing gate commits `success` or `failed`, and only a successful finalization is memoized.
-- `research_record_register_artifact` returns `warnings` when no checksum exists (absent file or the
-  64 MiB budget). Treat them as unverified evidence, never as integrity proof.
+  Registration warnings about a missing checksum mean unverified evidence, never integrity proof.
 
 ## Report outline (what the PDF will contain)
 
@@ -150,9 +154,9 @@ Failure text must state what went wrong: `无结果` / `failed` / `error` shorth
 
 ## Boundaries and recovery
 
-Limits and recovery: [references/limits.md](references/limits.md). Stage sequence:
+Limits and recovery: [limits.md](references/limits.md). Stage sequence:
 [workflow](../../workflows/standard-research-notebook.md). Argument shapes: [calls.json](examples/calls.json).
-No automatic task hooks or native agent-type installation are claimed. The skill drives checkpoints.
+No automatic task hooks or native agent-type installation are claimed; the skill drives checkpoints.
 If MCP is unavailable, read `levin_notebook` JSON/Markdown with ordinary file tools, or call the
 portable `mcp/runner/notebook.py` classes from Python; there is no standalone CLI yet.
 Preview calls only validate schema shape; never report them as performed experiments.

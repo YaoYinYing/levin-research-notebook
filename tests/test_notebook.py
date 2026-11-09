@@ -604,6 +604,20 @@ class RegressionTests(unittest.TestCase):
     def manifest(self):
         return json.loads((self.directory / 'manifest.json').read_text())
 
+    def file(self, name='input.txt', content='immutable original\n'):
+        target = self.directory / 'data' / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+        return target
+
+    def artifact(self, role='input', name='input.txt', **extra):
+        return self.n.register_artifact(self.eid, dict(role=role, location=str(self.file(name)),
+                                                       description='Test evidence', **extra))
+
+    def run_record(self, **extra):
+        return dict(backend='local', execution_status='success', command='python synthetic.py',
+                    parameters={'seed': 0}, environment={'python': sys.version}, **extra)
+
     def finalize_ok(self, request_id='f'):
         return self.n.finalize(self.eid, 'success', 'Interpretation', 'Synthetic limitation',
                                {'beneficial': False, 'reason': 'No result', 'figure_ids': [], 'reviewed_by': 'test'},
@@ -728,6 +742,115 @@ class RegressionTests(unittest.TestCase):
         self.assertTrue((self.directory / 'reports').is_dir())
         self.n.prune_reports(self.eid)
         self.assertGreaterEqual(len(list((self.directory / 'reports').iterdir())), 1)
+
+    def test_validate_separates_delivered_reports_from_blocked_attempts(self):
+        data = self.directory / 'data' / 'in.csv'
+        data.write_text('a\n1\n')
+        self.n.register_artifact(self.eid, {'role': 'input', 'location': str(data), 'description': 'Input'})
+        # A blocked attempt first: no method checkpoint yet.
+        blocked = self.finalize_ok('blocked-attempt')
+        self.assertEqual(blocked['report']['render_state'], 'blocked')
+        self.n.checkpoint(self.eid, 'agent-a', 'method', 'Recorded the procedure')
+        self.assertTrue(self.finalize_ok('delivered')['finalized'])
+        summary = self.n.validate(self.eid)['reports']
+        self.assertEqual(summary['total'], 2)
+        self.assertEqual(summary['success'], 1)
+        self.assertEqual(summary['blocked'], 1)
+        self.assertEqual(summary['pending_snapshots'], 1)
+        self.assertEqual(summary['latest_success'], self.manifest()['reports'][-1]['id'])
+
+    def test_a_reference_id_works_wherever_an_id_works(self):
+        self.artifact('input')
+        # give a second artifact a caller-chosen alias, as a real record does
+        target = self.file('alias.csv')
+        aliased = self.n.register_artifact(self.eid, {'role': 'input', 'location': str(target),
+                                                      'description': 'Aliased input',
+                                                      'reference_id': 'alt-build-data'})['artifact_id']
+        script = self.file('plot.py')
+        self.n.register_artifact(self.eid, {'role': 'script', 'location': str(script),
+                                            'description': 'Plotter', 'reference_id': 'b5-make'})
+        # a run may name its inputs by alias and be updated by alias
+        run = self.n.register_run(self.eid, dict(self.run_record(input_ids=['alt-build-data']),
+                                                 reference_id='run-figs'))
+        self.assertTrue(run['ok'])
+        # a figure may name the script by alias
+        figure = self.n.register_artifact(self.eid, {'role': 'figure', 'location': str(self.file('f.svg')),
+                                                     'description': 'Figure', 'input_ids': ['alt-build-data'],
+                                                     'script_id': 'b5-make', 'run_id': 'run-figs'})
+        self.assertTrue(figure['ok'])
+        # checkpoint evidence may be named by alias too
+        note = self.n.checkpoint(self.eid, 'agent-a', 'observation', 'Looked at the trace',
+                                 evidence_ids=['alt-build-data'])
+        self.assertTrue(note['ok'])
+        stored = self.manifest()
+        resolved = next(c for c in stored['checkpoints'] if c['id'] == note['checkpoint_id'])
+        self.assertEqual(resolved['evidence_ids'][0], aliased)
+
+    def test_unknown_reference_reports_what_was_expected(self):
+        with self.assertRaises(NotebookError) as caught:
+            self.n.register_artifact(self.eid, {'role': 'figure', 'location': str(self.file('g.svg')),
+                                                'description': 'Figure', 'input_ids': ['made-up'],
+                                                'script_id': self.artifact('script', 'p.py')['artifact_id'],
+                                                'run_id': 'nope'})
+        message = str(caught.exception)
+        self.assertIn('artifact_id', message)
+        self.assertIn('reference_id', message)
+
+    def test_update_run_by_alias_and_explain_a_wrong_id(self):
+        self.artifact('input')
+        self.n.register_run(self.eid, dict(self.run_record(), reference_id='run-figs'))
+        updated = self.n.register_run(self.eid, dict(self.run_record(), id='run-figs', command='python v2.py'))
+        self.assertTrue(updated['ok'])
+        with self.assertRaises(NotebookError) as caught:
+            self.n.register_run(self.eid, dict(self.run_record(), id='run-does-not-exist'))
+        self.assertIn('omit run.id', str(caught.exception))
+
+    def test_checkpoint_ids_are_not_evidence(self):
+        evidence = self.artifact('input')['artifact_id']
+        first = self.n.checkpoint(self.eid, 'agent-a', 'observation', 'First reading', evidence_ids=[evidence])
+        with self.assertRaises(NotebookError) as caught:
+            self.n.checkpoint(self.eid, 'agent-a', 'conclusion', 'Concluded', evidence_ids=[first['checkpoint_id']])
+        self.assertIn('not checkpoint ids', str(caught.exception))
+
+    def test_deliverable_is_a_role(self):
+        result = self.n.register_artifact(self.eid, {'role': 'deliverable',
+                                                    'location': str(self.file('briefing.html')),
+                                                    'description': 'Human-facing briefing'})
+        self.assertTrue(result['ok'])
+
+    def test_a_figure_inherits_provenance_from_its_run(self):
+        data = self.artifact('input')['artifact_id']
+        script = self.artifact('script', 'plot.py')['artifact_id']
+        run = self.n.register_run(self.eid, self.run_record(input_ids=[data, script]))['run_id']
+        # only the run is named; inputs and script come from the run
+        figure = self.n.register_artifact(self.eid, {'role': 'figure', 'location': str(self.file('f.svg')),
+                                                     'description': 'Figure', 'run_id': run})
+        self.assertTrue(figure['ok'])
+        stored = next(a for a in self.manifest()['artifacts'] if a['id'] == figure['artifact_id'])
+        self.assertEqual(stored['input_ids'], [data, script])
+        self.assertEqual(stored['script_id'], script)
+
+    def test_a_figure_without_any_provenance_still_fails(self):
+        with self.assertRaises(NotebookError) as caught:
+            self.n.register_artifact(self.eid, {'role': 'figure', 'location': str(self.file('h.svg')),
+                                                'description': 'Figure'})
+        self.assertIn('run that produced them', str(caught.exception))
+
+    def test_index_can_report_per_record_counts(self):
+        self.artifact('input')
+        self.n.checkpoint(self.eid, 'agent-a', 'method', 'Procedure recorded')
+        self.finalize_ok('one')
+        rows, errors = self.n.index('', include_summary=True)
+        self.assertEqual(errors, [])
+        summary = rows[0]['summary']
+        self.assertEqual(summary['artifacts'], 1)
+        self.assertEqual(summary['artifact_roles'], {'input': 1})
+        self.assertEqual(summary['checkpoints']['method'], 1)
+        self.assertEqual(summary['reports'], 1)
+        self.assertEqual(summary['quantities'], 0)
+        # the default shape stays small
+        plain, _errors = self.n.index('')
+        self.assertNotIn('summary', plain[0])
 
     def test_derived_from_records_the_campaign_hierarchy(self):
         parent = Notebook(self.workspace).init('parent-task', 'agent-a', 'Parent', 'Upstream work')['experiment_id']

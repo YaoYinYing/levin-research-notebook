@@ -45,6 +45,15 @@ _UNITS = {
     "Pa": {"M": 1, "L": -1, "T": -2}, "kPa": {"M": 1, "L": -1, "T": -2},
     "MPa": {"M": 1, "L": -1, "T": -2}, "bar": {"M": 1, "L": -1, "T": -2},
     "atm": {"M": 1, "L": -1, "T": -2}, "torr": {"M": 1, "L": -1, "T": -2},
+    # volume in litres -> m³ (kept separate from the `L` length dimension symbol,
+    # which only parse_dimension uses; that collision is why `mol/L` used to fail)
+    "litre": {"L": 3}, "liter": {"L": 3}, "L": {"L": 3}, "l": {"L": 3},
+    "mL": {"L": 3}, "uL": {"L": 3},
+    # electric potential -> V (kg m² s⁻² C⁻¹)
+    "V": {"M": 1, "L": 2, "T": -2, "Q": -1}, "mV": {"M": 1, "L": 2, "T": -2, "Q": -1},
+    # molar and its decades (N L⁻³)
+    "M": {"N": 1, "L": -3}, "mM": {"N": 1, "L": -3}, "uM": {"N": 1, "L": -3},
+    "nM": {"N": 1, "L": -3}, "pM": {"N": 1, "L": -3},
     # dimensionless scales
     "percent": {"_scale": 0.01}, "ppm": {"_scale": 1e-6}, "count": {}, "frame": {},
     "unitless": {}, "dimensionless": {},
@@ -64,6 +73,9 @@ _FACTORS = {
     "J": 1.0, "kJ": 1e3, "cal": 4.184, "kcal": 4184.0, "eV": 1.602176634e-19,
     "hartree": 4.3597447222071e-18,
     "Pa": 1.0, "kPa": 1e3, "MPa": 1e6, "bar": 1e5, "atm": 101325.0, "torr": 133.322,
+    "litre": 1e-3, "liter": 1e-3, "L": 1e-3, "l": 1e-3, "mL": 1e-6, "uL": 1e-9,
+    "V": 1.0, "mV": 1e-3,
+    "M": 1e3, "mM": 1.0, "uM": 1e-3, "nM": 1e-6, "pM": 1e-9,
     "percent": 0.01, "ppm": 1e-6, "count": 1.0, "frame": 1.0,
     "unitless": 1.0, "dimensionless": 1.0,
 }
@@ -100,7 +112,22 @@ FAMILIES = {
         "time", "duration", "dt", "timestep", "tau", "trajectory_length",
         "equilibration", "production", "sampling_time", "correlation_time")},
     "mass": {"dims": {"M": 1}, "preferred": "Da", "aliases": ("mass", "mw", "weight")},
-    "amount": {"dims": {"N": 1}, "preferred": "mol", "aliases": ("amount", "moles", "concentration_molar")},
+    "amount": {"dims": {"N": 1}, "preferred": "mol", "aliases": ("amount", "moles")},
+    # mol/L is N·L⁻³, not N: `concentration_molar` used to sit in `amount`, which made
+    # a Kd recorded in mol/L look like a wrong dimension rather than an unsupported one.
+    "molarity": {"dims": {"N": 1, "L": -3}, "preferred": "mol/L",
+                 "aliases": ("molarity", "concentration", "molar_concentration",
+                             "concentration_molar", "kd", "km", "ki", "ic50", "ec50",
+                             "dissociation_constant", "binding_affinity"),
+                 # every decade of mol/L is ordinary biochemistry
+                 "conventional": ("mol/L", "mM", "uM", "nM", "pM", "M")},
+    # Redox/electrochemical potentials: V = M L² T⁻³ Q⁻¹.
+    "potential": {"dims": {"M": 1, "L": 2, "T": -2, "Q": -1}, "preferred": "V",
+                  "aliases": ("potential", "redox_potential", "midpoint_potential",
+                              "reduction_potential", "formal_potential", "em", "e0",
+                              "e_mid", "half_wave_potential", "overpotential"),
+                  # proteins are quoted in mV far more often than in V
+                  "conventional": ("V", "mV")},
     "temperature": {"dims": {"TH": 1}, "preferred": "K", "aliases": (
         "temperature", "temp", "t", "thermostat_temperature", "target_temperature")},
     "molar_energy": {"dims": {"M": 1, "L": 2, "T": -2, "N": -1}, "preferred": "kJ/mol",
@@ -348,6 +375,9 @@ def check(quantity: dict) -> list[dict]:
                 _pdims, pfactor = parse_unit(preferred)
             except ValueError:
                 pfactor = factor
+            conventional = {_normalise(u) for u in FAMILIES[family].get("conventional", ())}
+            if _normalise(str(unit)) in conventional:
+                return issues
             if abs(factor - pfactor) > _UNIT_SCALE_TOL * max(abs(pfactor), 1e-30):
                 accepted = quantity.get("unit_acknowledged") is True
                 issues.append({"code": "unit_scale_acknowledged" if accepted else "unit_scale",

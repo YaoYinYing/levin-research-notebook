@@ -84,6 +84,48 @@ def _specific(value, what):
 
 class NotebookError(ValueError): pass
 
+
+# A caller may identify an artifact or run either by the server id it was given or by
+# the reference_id it registered itself. Both used to look "unknown" in every *other*
+# field, which cost a real user five failed calls, so resolution happens in one place.
+def _known_artifacts(m):
+    return {a['id']: a for a in m['artifacts']}
+
+
+def _resolve_artifact(ref, known):
+    if not isinstance(ref, str):
+        return None
+    if ref in known:
+        return known[ref]
+    for artifact in known.values():
+        if artifact.get('reference_id') == ref:
+            return artifact
+    return None
+
+
+def _resolve_run(ref, runs):
+    if not isinstance(ref, str):
+        return None
+    for run in runs:
+        if run['id'] == ref:
+            return run
+    for run in runs:
+        if run.get('reference_id') == ref:
+            return run
+    return None
+
+
+def _sample_ids(table, limit=4):
+    """A short, honest hint: what the caller could have passed instead."""
+    names = []
+    for key, value in table.items():
+        alias = value.get('reference_id') if isinstance(value, dict) else None
+        names.append(f'{key}' + (f' (alias {alias})' if alias else ''))
+        if len(names) >= limit:
+            break
+    return ', '.join(names) if names else 'none registered yet'
+
+
 def text(value, name, required=True, limit=20000):
     if not isinstance(value, str) or len(value) > limit or (required and not value.strip()):
         raise NotebookError(f'{name} must be a nonempty string of at most {limit} characters')
@@ -105,7 +147,7 @@ SCHEMA = {
  'interpretation':{'type':'string'},'limitations':{'type':'string'},'retention':{'type':'string'},
  'agents':{'type':'array','items':{'type':'string'},'uniqueItems':True},
  'checkpoints':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['id','created_at','agent_id','kind','text','evidence_ids'], 'properties':{'id':{'type':'string'},'created_at':{'type':'string'},'agent_id':{'type':'string'},'kind':{'enum':['method','observation','failure','conclusion','resume','note']},'text':{'type':'string','minLength':1},'evidence_ids':{'type':'array','items':{'type':'string'}},'title':{'type':'string'},'replica':{'type':['integer','null']},'retry':{'type':['integer','null']},'when_note':{'type':'string'},'refers_to':{'type':['string','null']},'supersedes':{'type':['string','null']}}}},
- 'artifacts':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['id','created_at','role','location','external','description','input_ids','script_id','run_id','sha256','checksum_origin','size_bytes','availability','conditions'], 'properties':{'id':{'type':'string'},'created_at':{'type':'string'},'role':{'enum':['raw','derived','script','figure','log','input','table']},'location':{'type':'string','minLength':1},'external':{'type':'boolean'},'description':{'type':'string'},'input_ids':{'type':'array','items':{'type':'string'}},'script_id':{'type':['string','null']},'run_id':{'type':['string','null']},'sha256':{'type':['string','null'],'pattern':'^[a-f0-9]{64}$'},'source_origin':{'enum':['local_original','remote_copy','unspecified']},'remote_host':{'type':['string','null']},'remote_path':{'type':['string','null']},'remote_copy_permission':{'type':['string','null']},'reference_id':{'type':['string','null']},'checksum_origin':{'enum':['computed','supplied_unverified','not_computed']},'size_bytes':{'type':['integer','null'],'minimum':0},'availability':{'enum':['local','missing','external_unverified']},'conditions':{'type':'object'}}}},
+ 'artifacts':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['id','created_at','role','location','external','description','input_ids','script_id','run_id','sha256','checksum_origin','size_bytes','availability','conditions'], 'properties':{'id':{'type':'string'},'created_at':{'type':'string'},'role':{'enum':['raw','derived','script','figure','log','input','table','deliverable']},'location':{'type':'string','minLength':1},'external':{'type':'boolean'},'description':{'type':'string'},'input_ids':{'type':'array','items':{'type':'string'}},'script_id':{'type':['string','null']},'run_id':{'type':['string','null']},'sha256':{'type':['string','null'],'pattern':'^[a-f0-9]{64}$'},'source_origin':{'enum':['local_original','remote_copy','unspecified']},'remote_host':{'type':['string','null']},'remote_path':{'type':['string','null']},'remote_copy_permission':{'type':['string','null']},'reference_id':{'type':['string','null']},'checksum_origin':{'enum':['computed','supplied_unverified','not_computed']},'size_bytes':{'type':['integer','null'],'minimum':0},'availability':{'enum':['local','missing','external_unverified']},'conditions':{'type':'object'}}}},
  'runs':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['id','created_at','backend','external_id','execution_status','command','parameters','environment','input_ids','output_ids','failure'], 'properties':{'id':{'type':'string'},'created_at':{'type':'string'},'backend':{'enum':['local','levin','slurm','external']},'host':{'type':'string','minLength':1},'external_id':{'type':'string'},'reference_id':{'type':['string','null']},'execution_status':{'enum':['wip','success','failed']},'command':{'type':'string'},'parameters':{'type':'object'},'environment':{'type':'object'},'input_ids':{'type':'array','items':{'type':'string'}},'output_ids':{'type':'array','items':{'type':'string'}},'failure':{'type':'string'}}}},
  'visualization':{'type':['object','null'],'additionalProperties':False,'required':['beneficial','reason','figure_ids','reviewed_by'], 'properties':{'beneficial':{'type':'boolean'},'reason':{'type':'string','minLength':1},'figure_ids':{'type':'array','items':{'type':'string'}},'reviewed_by':{'type':'string','minLength':1}}},
  'reports':{'type':'array','items':{'type':'object'}},'requests':{'type':'object'},
@@ -292,16 +334,27 @@ class Notebook:
         if kind=='failure': _specific(body,'failure checkpoint')
         p=dict(op='checkpoint',agent_id=agent_id,kind=kind,body=body,evidence_ids=list(evidence_ids),execution_status=execution_status,title=title,replica=replica,retry=retry,when_note=when_note,refers_to=refers_to,supersedes=supersedes)
         def change(m):
-            known={a['id'] for a in m['artifacts']}|{r['id'] for r in m['runs']}
-            if set(evidence_ids)-known: raise NotebookError('Unknown checkpoint evidence reference')
-            if kind=='conclusion' and not evidence_ids: raise NotebookError('Conclusions require evidence references')
+            arts=_known_artifacts(m)
+            resolved=[]
+            for ref in evidence_ids:
+                target=_resolve_artifact(ref,arts)
+                if target is None:
+                    target=_resolve_run(ref,m['runs'])
+                if target is None:
+                    raise NotebookError(f'Unknown checkpoint evidence reference {ref!r}; evidence_ids takes artifact or run '
+                                        f'ids only, not checkpoint ids. Known: {_sample_ids(arts)}')
+                resolved.append(target['id'])
+            if kind=='conclusion' and not resolved: raise NotebookError('Conclusions require evidence references')
             if supersedes:
                 earlier=[c for c in m['checkpoints'] if c['id']==supersedes]
-                if not earlier: raise NotebookError('supersedes must reference an existing checkpoint id')
+                if not earlier:
+                    raise NotebookError(f'supersedes must name an earlier checkpoint id (checkpoint-…); got {supersedes!r}. '
+                                        'Checkpoints are not artifacts or runs, and they have no alias.')
                 if earlier[0]['kind'] not in ('conclusion','observation','method'):
-                    raise NotebookError('only an earlier conclusion, observation or method can be superseded')
+                    raise NotebookError(f'cannot supersede a {earlier[0]["kind"]} checkpoint; only an earlier conclusion, '
+                                        'observation or method is correctable (a failure stays as it happened)')
             if execution_status: m['execution_status']=execution_status
-            c=dict(id=uid('checkpoint'),created_at=now(),agent_id=agent_id,kind=kind,text=body,evidence_ids=list(evidence_ids),title=title,replica=replica,retry=retry,when_note=when_note,refers_to=refers_to,supersedes=supersedes)
+            c=dict(id=uid('checkpoint'),created_at=now(),agent_id=agent_id,kind=kind,text=body,evidence_ids=resolved,title=title,replica=replica,retry=retry,when_note=when_note,refers_to=refers_to,supersedes=supersedes)
             m['checkpoints'].append(c)
             if agent_id not in m['agents']: m['agents'].append(agent_id)
             return {'checkpoint_id':c['id']}
@@ -360,12 +413,41 @@ class Notebook:
             if artifact['role'] in ('raw','input') and size and size>LARGE_COPY_BYTES:
                 raise NotebookError('A '+format(size)+'-byte remote original must stay on '+remote_host+' and be referenced; permission covers small working copies only')
         def change(m):
-            known={a['id'] for a in m['artifacts']}
+            known=_known_artifacts(m)
             for ref in artifact.get('input_ids',[]):
-                if ref not in known: raise NotebookError('Unknown artifact input reference')
-            if artifact.get('script_id') and not any(a['id']==artifact['script_id'] and a['role']=='script' for a in m['artifacts']): raise NotebookError('Unknown plotting/analysis script')
-            if artifact.get('run_id') and not any(r['id']==artifact['run_id'] for r in m['runs']): raise NotebookError('Unknown run reference')
-            if artifact['role']=='figure' and (not artifact.get('input_ids') or not artifact.get('script_id') or not artifact.get('run_id')): raise NotebookError('Figures require input_ids, script_id and run_id')
+                if _resolve_artifact(ref,known) is None:
+                    raise NotebookError(f'Unknown artifact input reference {ref!r}; pass an artifact_id (artifact-…) '
+                                        f'or the reference_id you registered it with. Known: {_sample_ids(known)}')
+            if artifact.get('script_id'):
+                target=_resolve_artifact(artifact['script_id'],known)
+                if target is None or target['role']!='script':
+                    scripts={k:v for k,v in known.items() if v['role']=='script'}
+                    raise NotebookError(f'Unknown plotting/analysis script {artifact["script_id"]!r}; it must name a '
+                                        f'registered artifact with role=script. Known scripts: {_sample_ids(scripts)}')
+            if artifact.get('run_id') and _resolve_run(artifact['run_id'],m['runs']) is None:
+                raise NotebookError(f'Unknown run reference {artifact["run_id"]!r}; use the run_id returned by '
+                                    f'register_run or the reference_id it was registered with. '
+                                    f'Known: {_sample_ids({r["id"]:r for r in m["runs"]})}')
+            if artifact['role']=='figure':
+                run=_resolve_run(artifact.get('run_id') or '', m['runs']) if artifact.get('run_id') else None
+                if run is None:
+                    raise NotebookError('Figures require the run that produced them: pass run_id (or its reference_id) '
+                                        'and input_ids plus script_id, or just run_id when that run already declares '
+                                        'them. Register the run first.')
+                # Inherit what the run already declares instead of demanding it twice.
+                missing_inputs=not artifact.get('input_ids')
+                missing_script=not artifact.get('script_id')
+                if missing_inputs and run.get('input_ids'):
+                    artifact['input_ids']=list(run['input_ids'])
+                if missing_script:
+                    script=_resolve_artifact(str(artifact.get('script_id') or ''),known)
+                    if script is None:
+                        script=next((known[r] for r in run.get('input_ids',[]) if r in known and known[r]['role']=='script'),None)
+                    if script is not None: artifact['script_id']=script['id']
+                if not artifact.get('input_ids') or not artifact.get('script_id'):
+                    raise NotebookError('Figures require input_ids and script_id (or a run that declares them): '
+                                        f'run {run["id"]} declares {len(run.get("input_ids",[]))} input(s). '
+                                        'Register the script artifact, then register or update the run with its inputs.')
             existing=None
             for old in m['artifacts']:
                 if old['location']==location and old['role']==artifact['role']:
@@ -400,8 +482,16 @@ class Notebook:
         allowed={'id','backend','host','external_id','execution_status','command','parameters','environment','input_ids','output_ids','failure','reference_id'}
         if set(run)-allowed: raise NotebookError('Unknown run metadata fields')
         def change(m):
-            known={a['id'] for a in m['artifacts']}
-            if (set(run.get('input_ids',[]))|set(run.get('output_ids',[])))-known: raise NotebookError('Unknown run artifact references')
+            known=_known_artifacts(m)
+            resolved_io={}
+            for field in ('input_ids','output_ids'):
+                resolved_io[field]=[]
+                for ref in run.get(field,[]):
+                    target=_resolve_artifact(ref,known)
+                    if target is None:
+                        raise NotebookError(f'Unknown {field} reference {ref!r}; pass an artifact_id or the reference_id '
+                                            f'you registered it with. Known: {_sample_ids(known)}')
+                    resolved_io[field].append(target['id'])
             text(run.get('command',''),'command')
             host=run.get('host') or (socket.gethostname() if run['backend'] in ('local','levin') else None)
             if not host: raise NotebookError('backend='+run['backend']+' runs must record host, the machine the computation actually ran on (e.g. hpc-node7)')
@@ -410,11 +500,14 @@ class Notebook:
             if run['execution_status']=='failed':
                 if not run.get('failure'): raise NotebookError('Failed runs require failure information')
                 _specific(run['failure'],'failure text')
-            existing=next((r for r in m['runs'] if r['id']==run.get('id')),None)
-            if run.get('id') and existing is None: raise NotebookError('Unknown run id for update')
+            existing=_resolve_run(run['id'],m['runs']) if run.get('id') else None
+            if run.get('id') and existing is None:
+                raise NotebookError(f'Unknown run id for update: {run["id"]!r}. To create a run, omit run.id entirely; '
+                                    f'to update one, pass the run_id you were given or its reference_id. '
+                                    f'Known runs: {_sample_ids({r["id"]:r for r in m["runs"]})}')
             ref_id=run.get('reference_id')
             if ref_id is not None: text(ref_id,'reference_id',limit=60)
-            r=dict(id=existing['id'] if existing else uid('run'),created_at=existing['created_at'] if existing else now(),backend=run['backend'],host=host,reference_id=ref_id,external_id=run.get('external_id',''),execution_status=run['execution_status'],command=run['command'],parameters=run.get('parameters',{}),environment=run['environment'],input_ids=run.get('input_ids',[]),output_ids=run.get('output_ids',[]),failure=run.get('failure',''))
+            r=dict(id=existing['id'] if existing else uid('run'),created_at=existing['created_at'] if existing else now(),backend=run['backend'],host=host,reference_id=ref_id,external_id=run.get('external_id',''),execution_status=run['execution_status'],command=run['command'],parameters=run.get('parameters',{}),environment=run['environment'],input_ids=resolved_io['input_ids'],output_ids=resolved_io['output_ids'],failure=run.get('failure',''))
             if existing: m['runs'][m['runs'].index(existing)]=r
             else: m['runs'].append(r)
             return {'run_id':r['id']}
@@ -488,7 +581,18 @@ class Notebook:
                         p=self.workspace/report[key]
                         if not p.is_file(): result['errors'].append(f'Missing report {key}')
                         elif report.get(key+'_sha256') and digest(p)!=report[key+'_sha256']: result['errors'].append(f'Changed report {key}')
+            # Which report is "the" report was previously only answerable by filtering
+            # manifest.reports by hand, and blocked attempts (source folder, no PDF) look
+            # like results in a directory listing.
             delivered=[r for r in m['reports'] if r.get('render_state')=='success']
+            result['reports']={
+                'total':len(m['reports']),
+                'success':len(delivered),
+                'blocked':sum(1 for r in m['reports'] if r.get('render_state')=='blocked'),
+                'failed':sum(1 for r in m['reports'] if r.get('render_state')=='failed'),
+                'latest_success':max(delivered,key=lambda r:r.get('source_revision',0))['id'] if delivered else None,
+                'pending_snapshots':len(m['reports'])-len(delivered),
+            }
             if delivered and m['revision']>max(r.get('source_revision',0) for r in delivered):
                 result['warnings'].append(f'Delivered report is stale: it snapshots revision {max(r.get("source_revision",0) for r in delivered)} but the manifest is at revision {m["revision"]}; re-finalize with a new request_id')
             # A cross-record artifact reference is allowed, but the hierarchy has to be
@@ -508,6 +612,18 @@ class Notebook:
             for a in m['artifacts']:
                 if a['external'] and '://' not in a['location']:
                     result['warnings'].append(f'{a["id"]}: path {a["location"]} is outside workspace_dir; this record is not portable to another machine')
+            # Glyph coverage belongs in validate: the author can still reword an
+            # observation here, whereas after finalize the PDF already has tofu in it.
+            try:
+                from reporting import check_glyphs
+                profile=m.get('font_profile') or 'scientific-cjk'
+                body='\n'.join([self.markdown(m)] + [c['text'] for c in m['checkpoints']])
+                for finding in check_glyphs(body, profile)[:20]:
+                    result['warnings'].append(
+                        f"报告字体画不出 {finding['character']} ({finding['codepoint']}, "
+                        f"{finding['count']} 处)：…{finding['context']}…；改用 ASCII 等价符号（如 => 或 ->）")
+            except Exception:
+                pass  # a font probe must never make validation fail
             result['valid']=not result['errors']
             final=self.validate_manifest(copy.deepcopy(m),final=True)
             result['final_readiness']={'valid':final['valid'],'errors':final['errors']}
@@ -720,7 +836,7 @@ class Notebook:
                 'removed_count':len(removable),'reclaimable_bytes':total,
                 'reclaimable':human_bytes(total),'kept':sorted(keep_ids),'dry_run':dry_run}
 
-    def index(self,query='',limit=100,offset=0):
+    def index(self,query='',limit=100,offset=0,include_summary=False):
         rows=[]; errors=[]
         paths=sorted((self.root/'experiments').glob('exp-*/manifest.json'))
         if len(paths)>10000: raise NotebookError('Index exceeds 10000 experiments; split workspace')
@@ -732,7 +848,25 @@ class Notebook:
                 for a in m['artifacts']: parts+=[a['location'],a['description'],a['id']]
                 for r in m['runs']: parts+=[r['command'],r['failure'],r['external_id'],r['id'],json.dumps(r['parameters'],ensure_ascii=False),json.dumps(r['environment'],ensure_ascii=False)]
                 haystack=' '.join(parts).lower()[:200000]
-                if all(term in haystack for term in query.lower().split()[:8]): rows.append({k:m[k] for k in ('experiment_id','task_id','title','objective','created_at','updated_at','execution_status','revision')})
+                if all(term in haystack for term in query.lower().split()[:8]):
+                    row={k:m[k] for k in ('experiment_id','task_id','title','objective','created_at','updated_at','execution_status','revision')}
+                    if include_summary:
+                        by_role={}
+                        for a in m['artifacts']: by_role[a['role']]=by_role.get(a['role'],0)+1
+                        row['summary']={
+                            'artifacts':len(m['artifacts']),'artifact_roles':by_role,
+                            'runs':len(m['runs']),
+                            'run_status':{s:sum(1 for r in m['runs'] if r['execution_status']==s)
+                                          for s in ('wip','success','failed') if any(r['execution_status']==s for r in m['runs'])},
+                            'checkpoints':{k:sum(1 for c in m['checkpoints'] if c['kind']==k)
+                                           for k in ('method','observation','failure','conclusion')},
+                            'conclusions':sum(1 for c in m['checkpoints'] if c['kind']=='conclusion'),
+                            'quantities':len(m.get('quantities') or []),
+                            'references':len(m.get('references') or []),
+                            'reports':len(m['reports']),
+                            'derived_from':list(m.get('derived_from') or []),
+                        }
+                    rows.append(row)
             except Exception as e: errors.append({'experiment_id':p.parent.name,'error':str(e)[:500]})
         return rows[offset:offset+limit],errors
 
