@@ -1,7 +1,7 @@
 from levin_plugin_sdk import Plugin, PythonRuntime, RuntimeCommand
 
 plugin = Plugin(
-    id='levin-research-notebook',version='0.11.0',display_name='Levin Research Notebook',
+    id='levin-research-notebook',version='0.11.1',display_name='Levin Research Notebook',
     description='Filesystem research evidence, experiment provenance and editable scientific reports.',
     server_name='runner',runtime=PythonRuntime(id='runner',python='3.11',project='./mcp/runner',cache_key='runner',
         packages=('jsonschema==4.23.0','filelock==3.16.1','reportlab==4.2.5','matplotlib==3.9.4','bibtexparser==2.1.0'),

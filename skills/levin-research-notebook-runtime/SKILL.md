@@ -124,10 +124,9 @@ re-computations with `reference_id` on the artifact or run so 复算与核验 ti
 
 Use `[^label]` inline and a matching `footnotes` entry for side remarks.
 
-Typography is not negotiable: body = Songti + Times New Roman, headings = Heiti + Times New Roman,
-code = Menlo with syntax highlighting (tag fences with the language, e.g. ```python), figure text =
-Arial + Heiti, figure captions = body faces. Failure text must state what went wrong:
-`无结果` / `failed` / `error` shorthand is rejected.
+**You choose `font_profile`** (scientific-cjk / cjk-sans / latin-only) — see
+[report format](references/report-format.md#fonts); check `preflight.fonts.cjk_available` first.
+Failure text must state what went wrong: `无结果` / `failed` / `error` shorthand is rejected.
 
 1. Assess whether visualization helps answer the objective. Record an explicit reason either way.
 2. When justified, delegate to a dedicated scientific-visualization worker using
