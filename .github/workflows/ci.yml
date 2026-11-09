@@ -57,6 +57,19 @@ jobs:
       - name: Prepare the test scratch directory
         run: python .github/scripts/prepare_scratch.py
 
+      # The runner image declares no CJK font (fonts-noto-color-emoji is the only
+      # font package in the Ubuntu 24.04 manifest), so the first real run failed five
+      # assertions that expect Chinese: page footers read '第 1 页' and captions '图'.
+      # Installing the face is the honest fix — the alternative would be skipping the
+      # assertions, which would leave the Linux font chain still never executed.
+      # macOS and Windows ship Songti/SimSun, so this is Linux-only.
+      - name: Install a CJK font (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq fonts-noto-cjk
+          fc-list :lang=zh | head -5
+
       - name: Install test dependencies
         run: python -m pip install --disable-pip-version-check -r .github/requirements-ci.txt
 

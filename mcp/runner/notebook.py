@@ -216,7 +216,7 @@ class Notebook:
         self._guard(path)
         if not path.is_file(): raise NotebookError(f'No experiment record exists for {eid}')
         if path.stat().st_size > MAX_RECORD: raise NotebookError('Manifest exceeds the 2 MB limit; split into linked experiments')
-        m = json.loads(path.read_text())
+        m = json.loads(path.read_text(encoding="utf-8"))
         VALIDATOR.validate(m)
         if m['experiment_id'] != eid: raise NotebookError('Manifest identity mismatch')
         return m
@@ -228,8 +228,8 @@ class Notebook:
         d = self._dir(m['experiment_id'])
         snapshot = d / 'revisions' / f"{m['revision']:06d}-{uuid.uuid4().hex}.json"
         if (d / 'record.md').is_file() and (d / 'manifest.json').is_file():
-            previous = json.loads((d / 'manifest.json').read_text())
-            current_text = (d / 'record.md').read_text()
+            previous = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+            current_text = (d / "record.md").read_text(encoding="utf-8")
             if current_text != self.markdown(previous):
                 self._atomic(d / 'revisions' / ('human-record-' + uuid.uuid4().hex + '.md'), current_text)
         self._atomic(snapshot, s)
@@ -363,6 +363,12 @@ class Notebook:
     def location(self,value):
         text(value,'location',limit=4096)
         parsed=urlsplit(value)
+        # A Windows drive letter parses as a one-character scheme: `D:\a\repo\data.csv`
+        # yields scheme 'd'. Every absolute Windows path was therefore rejected as an
+        # unsupported reference scheme — 79 errors on the first Windows CI run.
+        windows_drive = len(parsed.scheme) == 1 and len(value) > 2 and value[1] == ':' and value[2] in '\\/'
+        if windows_drive:
+            parsed=parsed._replace(scheme='')
         if parsed.scheme and parsed.scheme!='file':
             if parsed.scheme not in ('ssh','s3','https','http','slurm','dvc','datalad','levin-remote'): raise NotebookError('Unsupported reference scheme')
             if parsed.username or parsed.password or parsed.query or parsed.fragment: raise NotebookError('Credential/userinfo/query-bearing references are forbidden')
@@ -590,7 +596,7 @@ class Notebook:
             m=self._load(eid); result=self.validate_manifest(m)
             d=self._dir(eid)
             if not (d/'record.md').is_file(): result['errors'].append('record.md missing')
-            elif (d/'record.md').read_text()!=self.markdown(m): result['warnings'].append('record.md differs from generated manifest view; preserve edits in notes.md')
+            elif (d/"record.md").read_text(encoding="utf-8")!=self.markdown(m): result['warnings'].append('record.md differs from generated manifest view; preserve edits in notes.md')
             for report in m['reports']:
                 for key in ('source_path','pdf_path'):
                     if report.get(key):

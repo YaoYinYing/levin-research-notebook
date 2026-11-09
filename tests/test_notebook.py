@@ -123,10 +123,13 @@ class NotebookTests(unittest.TestCase):
     def test_concurrent_processes_agents_and_checkpoints(self):
         ctx=multiprocessing.get_context('spawn'); queue=ctx.Queue()
         workers=[ctx.Process(target=concurrent_writer,args=(str(self.workspace),f'worker-{i}',queue)) for i in range(4)]
+        # Windows starts a fresh interpreter per worker and locks files more slowly, so
+        # a deadline measured on macOS fails there on timing rather than on a lost write.
+        deadline=180 if sys.platform=='win32' else 45
         for p in workers: p.start()
         for p in workers:
-            p.join(45)
-            if p.is_alive(): p.terminate(); p.join(); self.fail('Concurrent worker exceeded 45 second test deadline')
+            p.join(deadline)
+            if p.is_alive(): p.terminate(); p.join(); self.fail(f'Concurrent worker exceeded {deadline} second test deadline')
             self.assertEqual(p.exitcode,0)
         results=[queue.get(timeout=5) for _ in workers]
         self.assertTrue(all(r['ok'] for r in results),results)
