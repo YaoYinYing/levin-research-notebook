@@ -623,7 +623,7 @@ class Notebook:
             foreign=set()
             for a in m['artifacts']:
                 location=str(a.get('location') or '')
-                match=re.search(r'levin_notebook/experiments/(exp-[0-9a-f]{32})/', location)
+                match=re.search(r'levin_notebook[\\/]experiments[\\/](exp-[0-9a-f]{32})[\\/]', location)
                 if match and match.group(1)!=m['experiment_id']:
                     foreign.add(match.group(1))
             for other in sorted(foreign-declared):
@@ -839,7 +839,7 @@ class Notebook:
         removable=[]
         for record in reports:
             name=str(record.get('source_path') or record.get('pdf_path') or '')
-            match=re.search(r'reports/(report-[0-9a-f]{32})/', name)
+            match=re.search(r'reports[\\/](report-[0-9a-f]{32})[\\/]', name)
             if not match: continue
             folder=match.group(1)
             if record['id'] in keep_ids: continue
