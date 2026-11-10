@@ -49,11 +49,11 @@ class NotebookTests(unittest.TestCase):
         self.directory = Path(self.initial['manifest_path']).parent
 
     def manifest(self):
-        return json.loads(Path(self.initial['manifest_path']).read_text())
+        return json.loads(Path(self.initial['manifest_path']).read_text(encoding='utf-8'))
 
     def file(self, name='input.txt', content='immutable original\n'):
         p = self.directory / 'data' / name
-        p.write_text(content)
+        p.write_text(content, encoding='utf-8')
         return p
 
     def artifact(self, role='input', name='input.txt', **extra):
@@ -83,12 +83,12 @@ class NotebookTests(unittest.TestCase):
         self.assertTrue((self.n.root/'.gitignore').is_file())
 
     def test_resume_adds_agent_once_and_preserves_notes(self):
-        notes=self.directory/'notes.md'; notes.write_text('Human notes stay here\n')
+        notes=self.directory/'notes.md'; notes.write_text('Human notes stay here\n', encoding='utf-8')
         for _ in range(2): self.n.init('task','agent-b','Synthetic task','Test evidence accounting')
         m=self.manifest()
         self.assertEqual(m['agents'],['agent-a','agent-b'])
         self.assertEqual(m['revision'],2)
-        self.assertEqual(notes.read_text(),'Human notes stay here\n')
+        self.assertEqual(notes.read_text(encoding='utf-8'),'Human notes stay here\n')
 
     def test_resume_identity_conflicts(self):
         before=self.manifest()
@@ -147,7 +147,7 @@ class NotebookTests(unittest.TestCase):
         rid=self.n.register_run(self.eid,run)['run_id']
         self.n.checkpoint(self.eid,'agent-a','failure','Calculation failed as recorded',[rid],execution_status='failed')
         self.assertEqual(self.manifest()['execution_status'],'failed')
-        self.assertIn('Intentional synthetic exception',(self.directory/'record.md').read_text())
+        self.assertIn('Intentional synthetic exception',(self.directory/'record.md').read_text(encoding='utf-8'))
 
     def test_external_reference_is_unverified_without_contact(self):
         result=self.n.register_artifact(self.eid,{'role':'raw','location':'s3://example-bucket/data.csv','sha256':'a'*64})
@@ -174,14 +174,14 @@ class NotebookTests(unittest.TestCase):
 
     def test_raw_change_rejected_and_manifest_retained(self):
         p=self.file(); self.n.register_artifact(self.eid,{'role':'raw','location':str(p)})
-        before=self.manifest(); p.write_text('Changed externally\n')
+        before=self.manifest(); p.write_text('Changed externally\n', encoding='utf-8')
         with self.assertRaisesRegex(NotebookError,'Raw evidence changed'):
             self.n.register_artifact(self.eid,{'role':'raw','location':str(p)})
         self.assertEqual(before,self.manifest())
         self.assertFalse(self.n.validate(self.eid)['valid'])
 
     def test_raw_and_input_may_not_live_in_scratch(self):
-        p=Path(self.initial['scratch_dir'])/'raw.txt'; p.write_text('test')
+        p=Path(self.initial['scratch_dir'])/'raw.txt'; p.write_text('test', encoding='utf-8')
         for role in ('raw','input'):
             with self.subTest(role=role),self.assertRaisesRegex(NotebookError,'scratch'):
                 self.n.register_artifact(self.eid,{'role':role,'location':str(p)})
@@ -192,7 +192,7 @@ class NotebookTests(unittest.TestCase):
         self.assertEqual(self.manifest()['artifacts'],[])
 
     def test_changed_and_deleted_evidence_detected(self):
-        self.artifact(); p=self.directory/'data'/'input.txt'; p.write_text('tampered')
+        self.artifact(); p=self.directory/'data'/'input.txt'; p.write_text('tampered', encoding='utf-8')
         self.assertIn('checksum mismatch',' '.join(self.n.validate(self.eid)['errors']))
         p.unlink()
         self.assertIn('missing local file',' '.join(self.n.validate(self.eid)['errors']))
@@ -200,15 +200,15 @@ class NotebookTests(unittest.TestCase):
     def test_markdown_preserves_provenance_and_manual_edits(self):
         _,_,rid,fig=self.figure_graph()
         self.n.checkpoint(self.eid,'agent-a','conclusion','Synthetic evidence only',[fig,rid])
-        path=self.directory/'record.md'; md=path.read_text()
+        path=self.directory/'record.md'; md=path.read_text(encoding='utf-8')
         for expected in (fig,rid,'sha256','environment','Synthetic evidence only','科学可复现'):
             self.assertIn(expected,md)
-        path.write_text(md+'\nHuman annotation\n')
+        path.write_text(md+'\nHuman annotation\n', encoding='utf-8')
         self.assertTrue(any('differs' in w for w in self.n.validate(self.eid)['warnings']))
         self.n.checkpoint(self.eid,'agent-a','note','Regenerate view')
         preserved=list((self.directory/'revisions').glob('human-record-*.md'))
-        self.assertEqual(len(preserved),1); self.assertIn('Human annotation',preserved[0].read_text())
-        self.assertEqual(path.read_text(),Notebook.markdown(self.manifest()))
+        self.assertEqual(len(preserved),1); self.assertIn('Human annotation',preserved[0].read_text(encoding='utf-8'))
+        self.assertEqual(path.read_text(encoding='utf-8'),Notebook.markdown(self.manifest()))
 
     def test_unsupported_conclusions_and_dangling_references_rejected(self):
         for evidence in ([],['unknown']):
@@ -252,14 +252,14 @@ class NotebookTests(unittest.TestCase):
         self.assertTrue((self.workspace/result['report']['source_path']).is_file())
 
     def test_index_reports_invalid_manifest_and_keeps_valid_rows(self):
-        bad=self.n.root/'experiments'/('exp-'+'f'*32); bad.mkdir(); (bad/'manifest.json').write_text('{broken')
+        bad=self.n.root/'experiments'/('exp-'+'f'*32); bad.mkdir(); (bad/'manifest.json').write_text('{broken', encoding='utf-8')
         rows,errors=self.n.index()
         self.assertEqual([r['experiment_id'] for r in rows],[self.eid])
         self.assertEqual(len(errors),1); self.assertEqual(errors[0]['experiment_id'],bad.name)
         self.assertEqual(self.n.index(query='no-match')[0],[])
 
     def test_invalid_neighbor_does_not_block_healthy_resume(self):
-        bad=self.n.root/'experiments'/('exp-'+'f'*32); bad.mkdir(); (bad/'manifest.json').write_text('{broken')
+        bad=self.n.root/'experiments'/('exp-'+'f'*32); bad.mkdir(); (bad/'manifest.json').write_text('{broken', encoding='utf-8')
         resumed=self.n.init('task','agent-a','Synthetic task','Test evidence accounting')
         self.assertEqual(resumed['experiment_id'],self.eid)
 
@@ -269,7 +269,7 @@ class NotebookTests(unittest.TestCase):
             self.n.checkpoint(self.eid,'agent-a','invalid-kind','Rejected checkpoint')
         self.assertEqual(before,self.manifest())
         self.assertEqual(revisions,set((self.directory/'revisions').iterdir()))
-        self.assertEqual((self.directory/'record.md').read_text(),Notebook.markdown(before))
+        self.assertEqual((self.directory/'record.md').read_text(encoding='utf-8'),Notebook.markdown(before))
 
     def test_finalize_pdf_replay_and_report_integrity(self):
         try:
@@ -324,11 +324,11 @@ class NotebookTests(unittest.TestCase):
             with self.subTest(experiment=bad),self.assertRaises(NotebookError): self.n._load(bad)
 
     def test_reference_outside_workspace_is_explicit_external(self):
-        external=Path(tempfile.mkdtemp(prefix='external-',dir=self.session))/'original.txt'; external.write_text('original')
+        external=Path(tempfile.mkdtemp(prefix='external-',dir=self.session))/'original.txt'; external.write_text('original', encoding='utf-8')
         self.n.register_artifact(self.eid,{'role':'raw','location':str(external)})
         a=self.manifest()['artifacts'][0]
         self.assertTrue(a['external']); self.assertEqual(a['location'],str(external))
-        self.assertEqual(external.read_text(),'original')
+        self.assertEqual(external.read_text(encoding='utf-8'),'original')
 
     def test_report_symlink_cannot_create_outside_workspace(self):
         outside=Path(tempfile.mkdtemp(prefix='report-escape-',dir=self.session))
@@ -351,7 +351,7 @@ class NotebookTests(unittest.TestCase):
                          'a blocked finalization must not let the index claim success')
         self.assertEqual(result['report']['requested_execution_status'], 'success')
     def test_terminal_status_commits_when_gates_pass(self):
-        script = self.workspace/'analysis.py'; script.write_text('print(1)\n')
+        script = self.workspace/'analysis.py'; script.write_text('print(1)\n', encoding='utf-8')
         run = self.n.register_run(self.eid, {'backend': 'local', 'execution_status': 'success',
                                              'command': 'python analysis.py', 'environment': {'python': '3.11'}})
         self.n.checkpoint(self.eid, 'agent-a', 'method', 'Deterministic synthetic procedure')
@@ -403,7 +403,7 @@ class NotebookTests(unittest.TestCase):
                                                     'description': 'produced later'})
         self.assertEqual(first['availability'], 'missing')
         self.assertIn('missing local file', str(self.n.validate(self.eid)['errors']))
-        target.write_text('x,y\n1,2\n')
+        target.write_text('x,y\n1,2\n', encoding='utf-8')
         second = self.n.register_artifact(self.eid, {'role': 'derived', 'location': str(target),
                                                      'description': 'produced later'})
         self.assertTrue(second.get('refreshed'))
@@ -422,7 +422,7 @@ class NotebookTests(unittest.TestCase):
         target = self.directory / 'data' / 'late_raw.csv'
         first = self.n.register_artifact(self.eid, {'role': 'raw', 'location': str(target), 'description': 'original export'})
         self.assertEqual(first['availability'], 'missing')
-        target.write_text('value\n1\n')
+        target.write_text('value\n1\n', encoding='utf-8')
         second = self.n.register_artifact(self.eid, {'role': 'raw', 'location': str(target), 'description': 'original export'})
         self.assertTrue(second.get('refreshed'))
         self.assertEqual(second['artifact_id'], first['artifact_id'])
@@ -433,7 +433,7 @@ class NotebookTests(unittest.TestCase):
     def test_raw_refresh_still_rejects_changed_content(self):
         target = self.file('raw_immutable.csv', 'first\n')
         recorded = self.n.register_artifact(self.eid, {'role': 'raw', 'location': str(target), 'description': 'original'})
-        target.write_text('second\n')
+        target.write_text('second\n', encoding='utf-8')
         with self.assertRaises(NotebookError):
             self.n.register_artifact(self.eid, {'role': 'raw', 'location': str(target), 'description': 'original'})
         self.assertEqual([a['id'] for a in self.manifest()['artifacts']], [recorded['artifact_id']])
@@ -480,7 +480,7 @@ class NotebookTests(unittest.TestCase):
 
     def test_paths_outside_the_workspace_are_flagged_as_non_portable(self):
         outside = Path(tempfile.mkdtemp(prefix='outside-', dir=self.session)) / 'machine_local.csv'
-        outside.write_text('a\n1\n')
+        outside.write_text('a\n1\n', encoding='utf-8')
         self.n.register_artifact(self.eid, {'role': 'input', 'location': str(outside), 'description': 'machine local'})
         self.assertTrue(any('not portable' in w for w in self.n.validate(self.eid)['warnings']))
         inside = self.artifact('input')
@@ -554,7 +554,7 @@ class NotebookTests(unittest.TestCase):
                                                'execution_status': 'success', 'command': 'srun python synthetic.py',
                                                'environment': {'python': '3.11'}})
         self.assertTrue(slurm['ok'])
-        record = (self.directory / 'record.md').read_text()
+        record = (self.directory / 'record.md').read_text(encoding='utf-8')
         self.assertIn('| 执行主机 | ', record)
         self.assertIn('hpc-node7', record)
         self.assertIn('| `'+slurm['run_id']+'` | slurm | `hpc-node7` |', record)
@@ -576,7 +576,7 @@ class NotebookTests(unittest.TestCase):
         self.assertGreaterEqual(space['delta_since_init']['notebook']['bytes'], 0)
         self.assertGreater(space['experiment']['files'], 0)
         self.assertFalse(space['notebook']['truncated'])
-        report = (self.workspace / done['report']['source_path']).read_text()
+        report = (self.workspace / done['report']['source_path']).read_text(encoding='utf-8')
         self.assertIn('## 9. 数据空间统计', report)
         self.assertIn('相对立项时增量', report)
 
@@ -591,7 +591,7 @@ class NotebookTests(unittest.TestCase):
                                                 'remote_copy_permission': 'user approved 2026-11-06'})
         finally:
             notebook.LARGE_COPY_BYTES = original
-        record = (self.directory / 'record.md').read_text()
+        record = (self.directory / 'record.md').read_text(encoding='utf-8')
         self.assertIn('远程来源', record)
         self.assertIn('主机 `hpc-node7`，原始路径 `/scratch/run42/traj.xtc`', record)
         self.assertIn('拷贝授权：user approved 2026-11-06', record)
@@ -609,12 +609,12 @@ class RegressionTests(unittest.TestCase):
         self.directory = Path(self.initial['manifest_path']).parent
 
     def manifest(self):
-        return json.loads((self.directory / 'manifest.json').read_text())
+        return json.loads((self.directory / 'manifest.json').read_text(encoding='utf-8'))
 
     def file(self, name='input.txt', content='immutable original\n'):
         target = self.directory / 'data' / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content)
+        target.write_text(content, encoding='utf-8')
         return target
 
     def artifact(self, role='input', name='input.txt', **extra):
@@ -689,7 +689,7 @@ class RegressionTests(unittest.TestCase):
         self.assertTrue(corrected['ok'])
         method = self.n.checkpoint(self.eid, 'agent-a', 'method', 'Ran 10 ns')
         self.n.checkpoint(self.eid, 'agent-a', 'method', 'Ran 100 ns', supersedes=method['checkpoint_id'])
-        record = (self.directory / 'record.md').read_text()
+        record = (self.directory / 'record.md').read_text(encoding='utf-8')
         # The wrong value stays visible, struck through, so the record shows the correction.
         self.assertIn('~~First reading~~', record)
         self.assertIn('已由「Re-read after recalibration」更正', record)
@@ -718,7 +718,7 @@ class RegressionTests(unittest.TestCase):
 
     def test_prune_reports_keeps_the_newest_success_and_all_revisions(self):
         data = self.directory / 'data' / 'in.csv'
-        data.write_text('a\n1\n')
+        data.write_text('a\n1\n', encoding='utf-8')
         self.n.register_artifact(self.eid, {'role': 'input', 'location': str(data), 'description': 'Input'})
         self.n.checkpoint(self.eid, 'agent-a', 'method', 'Ran three finalizes')
         for index in range(3):
@@ -735,7 +735,7 @@ class RegressionTests(unittest.TestCase):
 
     def test_prune_reports_dry_run_deletes_nothing(self):
         data = self.directory / 'data' / 'in.csv'
-        data.write_text('a\n1\n')
+        data.write_text('a\n1\n', encoding='utf-8')
         self.n.register_artifact(self.eid, {'role': 'input', 'location': str(data), 'description': 'Input'})
         self.n.checkpoint(self.eid, 'agent-a', 'method', 'Ran two finalizes')
         for index in range(2):
@@ -752,7 +752,7 @@ class RegressionTests(unittest.TestCase):
 
     def test_validate_separates_delivered_reports_from_blocked_attempts(self):
         data = self.directory / 'data' / 'in.csv'
-        data.write_text('a\n1\n')
+        data.write_text('a\n1\n', encoding='utf-8')
         self.n.register_artifact(self.eid, {'role': 'input', 'location': str(data), 'description': 'Input'})
         # A blocked attempt first: no method checkpoint yet.
         blocked = self.finalize_ok('blocked-attempt')
@@ -899,7 +899,7 @@ class RegressionTests(unittest.TestCase):
                           title='第二天续做', evidence_ids=[evidence])
         self.n.checkpoint(self.eid, 'agent-a', 'note', 'Cluster noticeboard said node7 was rebooted',
                           title='环境备注')
-        record = (self.directory / 'record.md').read_text()
+        record = (self.directory / 'record.md').read_text(encoding='utf-8')
         self.assertRegex(record, r'## \d+\. 恢复与备注')
         self.assertIn('Picked up after the scheduler preempted the job', record)
         self.assertIn('Cluster noticeboard said node7 was rebooted', record)
@@ -909,14 +909,14 @@ class RegressionTests(unittest.TestCase):
     def test_a_record_without_notes_keeps_the_plain_spine(self):
         self.artifact('input')
         self.n.checkpoint(self.eid, 'agent-a', 'method', 'Procedure recorded')
-        record = (self.directory / 'record.md').read_text()
+        record = (self.directory / 'record.md').read_text(encoding='utf-8')
         self.assertNotIn('恢复与备注', record)
 
     def test_derived_from_records_the_campaign_hierarchy(self):
         parent = Notebook(self.workspace).init('parent-task', 'agent-a', 'Parent', 'Upstream work')['experiment_id']
         child = Notebook(self.workspace).init('child-task', 'agent-a', 'Child', 'Downstream work',
                                               derived_from=[parent])['experiment_id']
-        manifest = json.loads((self.workspace / 'levin_notebook' / 'experiments' / child / 'manifest.json').read_text())
+        manifest = json.loads((self.workspace / 'levin_notebook' / 'experiments' / child / 'manifest.json').read_text(encoding='utf-8'))
         self.assertEqual(manifest['derived_from'], [parent])
 
     def test_derived_from_rejects_an_id_that_is_not_an_experiment(self):
@@ -927,7 +927,7 @@ class RegressionTests(unittest.TestCase):
         other = Notebook(self.workspace).init('other-task', 'agent-a', 'Other', 'Separate work')['experiment_id']
         other_manifest = self.workspace / 'levin_notebook' / 'experiments' / other / 'manifest.json'
         other_file = other_manifest.parent / 'data' / 'shared.csv'
-        other_file.write_text('x\n1\n')
+        other_file.write_text('x\n1\n', encoding='utf-8')
         Notebook(self.workspace).register_artifact(other, {'role': 'input', 'location': str(other_file),
                                                            'description': 'Shared input'})
         self.n.checkpoint(self.eid, 'agent-a', 'method', 'Used the shared table')
@@ -939,7 +939,7 @@ class RegressionTests(unittest.TestCase):
     def test_declaring_the_parent_silences_the_cross_record_warning(self):
         other = Notebook(self.workspace).init('other-task', 'agent-a', 'Other', 'Separate work')['experiment_id']
         other_file = self.workspace / 'levin_notebook' / 'experiments' / other / 'data' / 'shared.csv'
-        other_file.write_text('x\n1\n')
+        other_file.write_text('x\n1\n', encoding='utf-8')
         Notebook(self.workspace).register_artifact(other, {'role': 'input', 'location': str(other_file),
                                                            'description': 'Shared input'})
         declared = Notebook(self.workspace).init('task', 'agent-a', 'Regression task', 'Guard corrected behaviour',

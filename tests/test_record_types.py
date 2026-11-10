@@ -28,7 +28,7 @@ class RecordTypeTests(unittest.TestCase):
     def build(self, kind, **finalize_kwargs):
         workspace = Path(tempfile.mkdtemp(prefix=kind + "-", dir=self.session))
         (workspace / "data").mkdir()
-        (workspace / "data" / "in.csv").write_text("a\n1\n")
+        (workspace / "data" / "in.csv").write_text("a\n1\n", encoding='utf-8')
         notebook = Notebook(str(workspace))
         eid = notebook.init(task_id=f"t-{kind}", agent_id="a", title=f"{kind} record",
                             objective="Compare section templates.", purpose="Because templates differ.",
@@ -40,7 +40,7 @@ class RecordTypeTests(unittest.TestCase):
         result = notebook.finalize(eid, "success", "Supported.", "Limited.",
                                    {"beneficial": False, "reason": "none", "figure_ids": [], "reviewed_by": "a"},
                                    request_id="once", **finalize_kwargs)
-        return (workspace / result["report"]["source_path"]).read_text(), result
+        return (workspace / result["report"]["source_path"]).read_text(encoding='utf-8'), result
 
     def test_experiment_template_matches_the_agreed_outline(self):
         text, _ = self.build("experiment")
@@ -86,7 +86,7 @@ class RecordTypeTests(unittest.TestCase):
     def test_reference_links_surface_in_artifacts_and_runs(self):
         workspace = Path(tempfile.mkdtemp(prefix="refs-", dir=self.session))
         (workspace / "data").mkdir()
-        (workspace / "data" / "s.pdb").write_text("END\n")
+        (workspace / "data" / "s.pdb").write_text("END\n", encoding='utf-8')
         notebook = Notebook(str(workspace))
         eid = notebook.init(task_id="t-refs", agent_id="a", title="refs", objective="link check",
                             record_type="literature_review")["experiment_id"]
@@ -99,7 +99,7 @@ class RecordTypeTests(unittest.TestCase):
         result = notebook.finalize(eid, "success", "ok", "narrow",
                                    {"beneficial": False, "reason": "none", "figure_ids": [], "reviewed_by": "a"},
                                    references=[{"id": "R1", "citation": "Doe 2024"}], request_id="r1")
-        text = (workspace / result["report"]["source_path"]).read_text()
+        text = (workspace / result["report"]["source_path"]).read_text(encoding='utf-8')
         self.assertIn("对应文献 `R1`", text)
         self.assertIn("文献 R1", text)
 
