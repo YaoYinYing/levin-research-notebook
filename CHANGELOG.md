@@ -1,167 +1,474 @@
 # Changelog
 
-Version history for `levin-research-notebook`. Format: what changed for a *user of the plugin* —
-an agent driving the tools, or a human reading a report. Internal refactors appear only when they
-changed a rejection, a default or an output.
+All notable changes to this project will be documented in this file.
 
-Every entry below is checkable: `0.10.4` onward from `git log`, everything earlier from the packaged
-artefacts in `dist/` (each `.levin-plugin.tgz` contains the source, the skill and the test suite of
-that release, which is how the numbers here were taken). Versions are not backfilled with guesses;
-where the artefacts only support a coarse statement, the entry stays coarse.
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased — documentation system
+Entries are written for the two readers the plugin actually has: an agent driving the tools and a
+person reading a delivered report. Only changes that alter a rejection, a default, an output or a
+contract appear here; internal refactors do not. Scopes name the module that owns the behaviour:
+`Records` (`notebook.py`), `Tools` (`plugin_spec.py`), `Report` (`reporting.py`), `Units`
+(`units.py`), `Bibliography` (`bibtex_index.py`), `LaTeX` (`latex_export.py`), `Skill` (`skills/**`),
+`Docs`, `CI`, `Tests`.
 
-No behaviour change; no source, test or workflow file was touched.
+Every entry is checkable. `0.10.4` onward come from `git log`; earlier ones were reconstructed from
+the packaged artefacts in `dist/` (each `.levin-plugin.tgz` carries the source, the skill and the test
+suite of that release, which is where the test counts come from). Where only a coarse statement is
+supportable, the entry stays coarse rather than guessing.
 
-- **Added `docs/`** as the human-facing design layer, with a written placement rule that decides
-  whether a fact belongs in `README.md`, a `docs/` page or a skill reference:
-  [docs/README.md](docs/README.md).
-  - [docs/why-not-an-eln.md](docs/why-not-an-eln.md) — adoption decision and what is refused.
-  - [docs/lifecycle.md](docs/lifecycle.md) — the five stages with a transcript from a real run.
-  - [docs/manifest-and-report.md](docs/manifest-and-report.md) — writer and report section for every
-    manifest field, including the 14 that never render.
-  - [docs/architecture.md](docs/architecture.md) — module map, the invariant each module enforces,
-    and a "where does X go" table.
-  - [docs/limitations.md](docs/limitations.md) — never-executed platform branches, test-suite gaps,
-    renderer limits, record-model limits.
-- **Rewrote `README.md`** as a front door: one-page identity, a two-command quickstart, the eight
-  tools by intent (schemas stay in `plugin_spec.py`), enforced guarantees, honest limits, and a
-  reading map. Removed the duplicated tool-schema prose that had already drifted.
-- **Added `CONTRIBUTING.md`** — test invocation with the two prerequisites that actually bite,
-  compile/validate/package, the release checklist, and the documentation rules.
-- **Added this changelog.**
-- **Fixed two factual errors in skill references** found while checking claims against source:
-  - `references/start.md` and `references/report.md` said section 1 实验目的 falls back to `hypothesis`
-    when `purpose` is absent. It does not: `Notebook._sec_questions` reads `purpose` only and prints
-    `未记录研究问题。` otherwise; `hypothesis` feeds the header's **为什么要做** line.
-  - `references/report.md` and `references/limits.md` described Markdown tables as literal text and
-    an unparsable formula as literal `$…$`. Tables render as a real grid (long cells truncated with
-    `…`), a pipe line without a `---` row is literal, a multi-line `$$` block is not recognised, and
-    math that mathtext accepts is rasterised rather than printed.
-- **Corrected the same table claim in `README.md`** — it was the version a new user read first.
+Versions `0.8.x` never existed, and `0.11.8` was committed but never packaged — its content is
+recorded under `0.11.9`, which is the release that shipped it.
 
-## 0.11.5
+```text
+## TEMPLATE
+### Added
 
-- **Split the skill into a tree loaded by stage.** `SKILL.md` had reached 11 989 characters against a
-  12 000-character validator ceiling — 11 characters of headroom — and duplicated content that also
-  lived in `references/limits.md`. It is now a 3 508-character routing entry point: five stages, the
-  invariants, a table of which reference file to load at which stage.
-- `references/report-format.md` is gone, replaced by `references/report.md` (sections, quantities,
-  math, figures, glyph coverage, editable sources, fonts) plus new `references/start.md`,
-  `references/evidence.md`, `references/bibliography.md` and `references/finalize.md`.
-- Content duplicated between `SKILL.md` and `limits.md` was deduplicated so each fact has one home.
+### Changed
 
-## 0.11.4
+### Fixed
 
-- **Reference aliases resolve everywhere.** `input_ids`, `script_id`, `run_id`, `run.id` and
-  `evidence_ids` accept either the server id (`artifact-…`, `run-…`) or the `reference_id` you
-  registered. Previously an alias was "unknown" in every field except the one it was registered on;
-  five of twelve rejected calls in one real campaign session were that.
-- **Units stop at molecular dynamics no longer.** `molarity` (mol/L, M, mM, µM, nM, pM) and
-  `potential` (V, mV) are families; `L` became a real volume unit, so `mol/L` parses.
-- **`role=deliverable`** for the artefact a task hands a human, distinct from a `derived` intermediate.
-- **A figure may name only its producing `run_id`** and inherit `input_ids`/`script_id` from it.
-- **`validate` reports missing glyphs per codepoint with context**, before `finalize` rather than
-  inside the delivered PDF. Prose is probed against serif+CJK faces, code against mono separately.
-- **`index(include_summary: true)`** adds per-record counts (artifacts by role, runs by status,
-  checkpoints by kind, quantities, references, reports, `derived_from`).
-- 156 test cases.
+### Removed
 
-## 0.11.3
-
-Fixed a release-notes defect rather than a behaviour one: the `0.11.2` README still said *seven*
-`research_record_*` tools after `prune_reports` shipped, and this release corrected it to eight.
-`validate` result payload gained the `reports` block (total / success / blocked / failed /
-`latest_success` / `pending_snapshots`) so "which PDF is the real one" no longer needs a manifest read.
-145 test cases.
-
-## 0.11.2
-
-Five behaviours found by a real campaign review (8 records, 41 finalizes):
-
-- **`finalize` no longer wipes fields you omit.** `None` keeps the stored value; an explicit `[]`
-  clears it. A second finalize that only added artifacts had been silently deleting
-  `lessons`/`plans`/`results`/`quantities`.
-- **An unconventional unit blocks instead of warning**, with `unit_acknowledged: true` as the explicit
-  escape hatch (reported as 惯例差异). An unknown quantity name now requires a declared `dimension`.
-- **`conclusion`, `observation` and `method` checkpoints can be superseded** — the original stays
-  visible, struck through, naming its correction. A `failure` still cannot.
-- **New tool `research_record_prune_reports`** deletes old PDF snapshot folders, always keeping at
-  least one, never touching `revisions/` or artifacts, with `dry_run` listing first. This is the
-  eighth tool; 0.11.0–0.11.1 had seven.
-- `derived_from` records a campaign hierarchy and `validate` warns on an undeclared cross-record
-  artifact reference; `quantities.replica` separates three runs from three quantities and blocks a
-  duplicate name per replica; `implementer` and `environment_location` can be backfilled on resume
-  but never rewritten.
-- 144 test cases.
-
-## 0.11.1
-
-- The skill now tells the agent to **choose a font profile** (`scientific-cjk` / `cjk-sans` /
-  `latin-only`) from what the report contains, and to check `preflight.fonts.cjk_available` first.
-  0.11.0 made profiles resolvable but nothing used them, so every report silently took the default.
-- Font detail moved into `references/report-format.md` to stay inside the skill size limit.
-
-## 0.11.0
-
-- **Per-report font profiles with cross-platform CJK chains.** `resolve_fonts(profile)` returns an
-  immutable per-report resolution; previously fonts were a module-level mutable dict resolved once per
-  process, so two reports with different typefaces could corrupt each other.
-- A host with no CJK face no longer renders Chinese as `[U+XXXX]` silently: `preflight` reports
-  `cjk_available` before rendering and `report.fonts.notes` records what was resolved.
-- Candidate chains cover macOS, Linux (Liberation, DejaVu, Noto CJK, arphic, wqy) and Windows
-  (times, consola, simsun, msyh). Only `.ttf`/`.ttc` — ReportLab rejects `.otf` CFF outlines.
-- 126 test cases.
-
-## 0.10.4 — 0.10.0
-
-Fourth-patch releases in this range changed dimensional-check edge cases and renderer glyph
-handling, not the record model:
-
-- **0.10.4** — superscript/subscript characters rendered as caret notation are now tracked
-  separately (`transliterated_codepoints`) instead of being reported as missing glyphs.
-- **0.10.3** — the caret-notation substitution itself: sub/superscript glyphs missing from the
-  embedded faces are rewritten (`m⁻¹` → `m^-1`) rather than printed as tofu.
-- **0.10.2** — dimension formulas printed with Unicode superscripts, one of which (U+207B) no text
-  face could draw; formulas now use plain caret notation. `rate`'s preferred unit became `1/s`.
-- **0.10.1** — short quantity-name aliases must match the whole name: `k` no longer swallows
-  `k_times_dt_max`. `unit_scale` issues report as 惯例差异 rather than 需修正.
-- **0.10.0** — **dimensional checking** (`units.py`, `quantities` on `finalize`) and **standalone
-  LaTeX export** (`latex_export.py`, `report.tex` next to the PDF). 120 test cases, 9 modules.
-
-## 0.9.0 — 0.9.3
-
-- **0.9.0** — bibliography support: `bibtex_index.py`, `bibtex` / `bibtex_path` on `finalize`,
-  `references`, `reference_sections`, `citations`, `synthesis`, `search_strategy`; and the three
-  record types (`experiment`, `analysis`, `literature_review`) that switch the report's middle
-  sections. 93 test cases.
-- **0.9.1 — 0.9.3** — patches to reference rendering and metadata hygiene.
-
-## 0.1.0 — 0.7.2
-
-The pre-`0.9` line established the model these pages describe: one canonical `manifest.json` per
-experiment, immutable `revisions/`, append-only checkpoints, artifact/run registration by reference,
-`validate` separated from `finalize`, and the ReportLab fixed-layout PDF with the numbered Chinese
-section spine. What the packaged artefacts show across the range:
-
-| Versions | Test cases | Modules | Notes |
-|---|---|---|---|
-| 0.1.0 – 0.1.1 | 49 | 6 | `adapter`, `notebook`, `plugin_spec`, `reporting`, `server`, `setup_runtime` |
-| 0.2.0 – 0.5.0 | 54 → 72 | 6 | the stage chain and `workflows/` appear |
-| 0.6.0 – 0.7.2 | 72 → 80 | 6 | `test_schema_surface.py` guards spec↔library agreement; skill grows past 10 KB |
-| 0.9.0 | 93 | 7 | `bibtex_index.py`, `test_record_types.py` |
-
-## How these entries were produced
-
-```bash
-git log --oneline                       # 0.10.4 onward carries the detail above
-for v in 0.1.0 0.5.0 0.9.0 0.10.4 0.11.5; do
-  tar xzf dist/levin-research-notebook-$v.levin-plugin.tgz -C /tmp/$v
-  grep -rhc 'def test' /tmp/$v/tests/*.py   # test counts
-  ls /tmp/$v/mcp/runner/*.py                # module set
-done
 ```
 
-Anything not supported by one of those two sources is absent from this file on purpose. In
-particular there is no per-version date column: the tarball mtimes are build times, not release
-dates, and inventing dates would make the file less true than its absence.
+## [Unreleased]
+
+## [0.12.1] - 2026-11-13
+
+Figure placement and in-text citation, reported as "we seem to be writing Microsoft Office": every
+plot was collected at one point in 实验结果 and nothing in the prose pointed at it.
+
+### Added
+- Report:
+  - `\fig{artifact-id}` prints `图 N` and puts the plot directly after the enclosing paragraph, so
+    the reference point decides the position. The key may also be the image file's stem.
+  - `\figure{artifact-id}` is now idempotent: a figure cited from several entries is placed once, at
+    its earliest citation.
+- Records:
+  - `finalize` emits `\figure{…}` for a figure listed in a checkpoint's `evidence_ids`, so a plot
+    cited by an observation lands beside that observation with no extra authoring.
+
+### Changed
+- Report:
+  - figures are numbered by first appearance in the document, not by registration order. A figure
+    cited in passage 3 is 图 1 even if it was the fifth artifact registered; the number is reserved on
+    first sight and reused, so reordering the body renumbers correctly.
+  - the uncited-figure plate now carries a 图表 heading and, when some figures were placed inline,
+    one sentence saying the rest were not cited individually.
+  - 材料 (§4) lists `raw`/`input` evidence only; derived tables and figures are results, not materials.
+    Above three items the row summarizes and the full list follows as bullets.
+  - non-default parameters are summarized and pointed at the appendix 执行溯源 when long. A
+    600-character JSON blob inside a table cell was unreadable and looked authoritative while being
+    truncated.
+- Records:
+  - `refers_to` renders as `（见「<标题>」）` using the target's heading. It printed `(see checkpoint-<32
+    hex>)` — English boilerplate around an unreadable id — and the evidence label is now 证据 rather
+    than `Evidence:` in an otherwise Chinese document.
+
+### Fixed
+- Records:
+  - `validate` reports figures no body checkpoint cites in one aggregated warning that names the two
+    repairs. Eighteen per-file warnings buried the real finding among noise.
+
+### Tests
+- 182 cases (175 + placement, numbering, plate, materials and warning regressions).
+
+## [0.12.0] - 2026-11-13
+
+A record-model release driven by a 13-item review of v0.11.10 (one real 95-revision analysis
+record) plus five rendering defects found by reading a delivered 52-page PDF.
+
+### Added
+- Records:
+  - `conditional` checkpoint kind for counterfactual reasoning and falsifiable predictions. It
+    requires `refers_to` and accepts no `evidence_ids`, because it has no direct evidence by
+    construction; it renders in its own 条件推演与可证伪预测 section instead of being forced into a
+    `conclusion` (which required evidence) or a `note` (which renders at the end).
+  - artifacts carry `revision` (incremented on every in-place refresh) and `retired`, and a new
+    artifact may name `supersedes`. A retired artifact keeps its history and stops producing
+    file-existence and checksum errors.
+  - `init` resumes by explicit `experiment_id` even when the title or objective wording changed, so
+    a parent session can take over work a subagent started.
+- Tools:
+  - `research_record_prune_revisions` reclaims old revision snapshots, keeping the newest N; copies
+    of hand edits (`human-record-*.md`) are never removed. Ninth tool.
+- Report:
+  - straight double quotes around Chinese become Chinese quotes; quotes inside a code span, a fenced
+    block or a JSON parameter stay literal, because rewriting those changes a value a reader copies.
+
+### Changed
+- Records:
+  - a `note` may now be corrected by a later `note`; it was the most frequently wrong kind and the
+    only one that could never be revised.
+  - a `note` may no longer replace an `observation`, `method` or `conclusion`. The correction would
+    render in the trailing 恢复与备注 while the superseded finding stayed in 实验结果, struck
+    through and pointing at nothing.
+  - `refers_to` naming a `checkpoint-…` id must exist. It was free text nobody checked.
+  - `reference_id` must be unique across artifacts. Two artifacts could share an alias and
+    resolution silently returned the first, so a citation pointed at the wrong evidence with no
+    error anywhere.
+- Report:
+  - a changed checksum is graded by role: `raw` and `input` evidence keeps the error, while
+    `figure`/`derived` output reports "checksum changed since revision N" as a warning and names
+    both repair paths. A regenerated figure is a normal scientific event, not tampering.
+  - the hash budget verifies small files first; it used to be spent in manifest order, so one large
+    trajectory could consume all 64 MiB and leave every figure unchecked while the record still
+    reported valid.
+
+### Fixed
+- Report:
+  - decode HTML entities: a record is Markdown, where `&lt;160` means `<160`; the entity was printed
+    verbatim (8 × `&lt;`, 6 × `&gt;` in one real report).
+  - resolve a sub/superscript run as one unit. Per-character resolution produced `κ^-¹`, because the
+    missing minus became `^-` while the Latin-1 `¹` stayed a real glyph; a run is now either fully
+    drawn or fully caret (`κ^-1`), and `R²`/`Å³` keep their true superscripts.
+  - never break a machine-readable token across two lines. Table columns now take a floor width from
+    their longest unbreakable token, so an `artifact-…` id stays copyable (37 were split mid-hash).
+  - the glyph probe now checks a code block against the faces the renderer actually uses, CJK
+    included. Probing code against the mono face alone reported every Chinese character inside a
+    fenced block as missing — 55 false warnings on one record while it rendered correctly.
+- Records:
+  - section 1 no longer reprints the header's 为什么要做 paragraph verbatim; it points at it. One
+    real record opened with the same 469-character paragraph twice.
+
+### Tests
+- 175 cases (161 + one regression per fix and per new behaviour).
+
+## [0.11.10] - 2026-11-13
+
+### Added
+- Skill:
+  - `skills/levin-labnote/`, a human-facing skill describing the workflow, installation, usage and
+    current limits, alongside the existing agent-facing `levin-research-notebook-runtime`.
+- Docs:
+  - the README names both skills and says which reader each is for.
+
+## [0.11.9] - 2026-11-10
+
+The release CI signed off. Contains what `0.11.8` committed but never packaged.
+
+### Fixed
+- CI:
+  - two POSIX-only path regexes (`levin_notebook/experiments/…`, `reports/report-…/`) also match a
+    Windows separator.
+  - install a TrueType CJK face on Linux: `fonts-noto-cjk` ships OpenType/CFF outlines, which
+    ReportLab rejects, so the job installed a font the renderer could not use.
+  - resolve `NOTEBOOK_TEST_SCRATCH`, because `/tmp` is a symlink on macOS and an unresolved path
+    tripped two assertions; make the concurrency deadline platform-aware on win32.
+- Records:
+  - read and write text files with an explicit encoding; the default was cp1252 on Windows, so a
+    record containing Chinese could not be reloaded.
+
+## [0.11.7] - 2026-11-09
+
+### Fixed
+- Records:
+  - decode a Windows drive letter as a path, not a URL scheme (`urlsplit` read `D:\…` as scheme `d`).
+  - pass `encoding="utf-8"` at every `read_text()`/`write_text()` in the runner.
+
+## [0.11.6] - 2026-11-09
+
+### Added
+- Docs:
+  - `docs/` as the human-facing design layer with a written placement rule deciding whether a fact
+    belongs in the README, a `docs/` page or a skill reference; `why-not-an-eln`, `lifecycle`,
+    `manifest-and-report`, `architecture`, `limitations`.
+  - `CONTRIBUTING.md` and this changelog.
+- CI:
+  - `ci.yml` running the suite on ubuntu, macOS and Windows with no `continue-on-error`.
+  - `structure.yml`: skill size and link tree, offline link/anchor check, dependency-pin drift,
+    plugin-spec dry run, and a Creator-level validation of the published package.
+
+### Changed
+- Docs:
+  - README rewritten as a front door; duplicated tool-schema prose that had already drifted removed.
+
+### Fixed
+- Skill:
+  - four factual errors: section 1 reads `purpose` only (it does not fall back to `hypothesis`);
+    tables render as a real grid; a multi-line `$$` block is not recognised; math that mathtext
+    accepts is rasterised rather than printed.
+- Records:
+  - `note` and `resume` checkpoints render in the trailing 恢复与备注 section instead of vanishing.
+
+## [0.11.5] - 2026-11-09
+
+### Changed
+- Skill:
+  - split into a tree loaded by stage. `SKILL.md` had reached 11 989 characters against a 12 000
+    ceiling and duplicated `references/limits.md`; it is now a 3 508-character routing entry.
+  - `references/report-format.md` replaced by `references/report.md`, plus new `start.md`,
+    `evidence.md`, `bibliography.md` and `finalize.md`.
+
+## [0.11.4] - 2026-11-09
+
+### Added
+- Records:
+  - reference aliases resolve in `input_ids`, `script_id`, `run_id`, `run.id` and `evidence_ids`, not
+    only in the field the alias was registered on.
+  - `role=deliverable` for the artefact a task hands a human.
+  - `index(include_summary: true)` adds per-record counts.
+- Units:
+  - `molarity` (mol/L, M, mM, µM, nM, pM) and `potential` (V, mV) families; `L` became a real volume
+    unit, so `mol/L` parses.
+- Report:
+  - `validate` reports missing glyphs per codepoint with context before `finalize`, probing prose
+    against serif+CJK faces and code against mono separately.
+
+### Changed
+- Records:
+  - a figure may name only its producing `run_id` and inherit `input_ids`/`script_id` from it.
+
+## [0.11.3] - 2026-11-09
+
+### Fixed
+- Docs:
+  - the `0.11.2` README still said seven `research_record_*` tools after `prune_reports` shipped.
+
+### Added
+- Records:
+  - `validate` returns a `reports` block (total / success / blocked / failed / `latest_success` /
+    `pending_snapshots`), so "which PDF is the real one" no longer needs a manifest read.
+
+## [0.11.2] - 2026-11-09
+
+Five behaviours found by a real campaign review (8 records, 41 finalizes).
+
+### Fixed
+- Records:
+  - `finalize` no longer wipes fields you omit: `None` keeps the stored value, an explicit `[]`
+    clears it. A second finalize that only added artifacts had been deleting `lessons`/`plans`/
+    `results`/`quantities`.
+  - `conclusion`, `observation` and `method` checkpoints can be superseded; the original stays
+    visible, struck through, naming its correction. A `failure` still cannot.
+- Units:
+  - an unconventional unit blocks instead of warning, with `unit_acknowledged: true` as the explicit
+    escape hatch; an unknown quantity name requires a declared `dimension`.
+
+### Added
+- Tools:
+  - `research_record_prune_reports` deletes old PDF snapshot folders, always keeping at least one,
+    never touching `revisions/` or artifacts, with `dry_run` listing first. Eighth tool.
+- Records:
+  - `derived_from` records a campaign hierarchy; `validate` warns on an undeclared cross-record
+    artifact reference.
+  - `quantities.replica` separates three runs from three quantities and blocks a duplicate name per
+    replica.
+  - `implementer` and `environment_location` can be backfilled on resume but never rewritten.
+
+## [0.11.1] - 2026-11-09
+
+### Fixed
+- Skill:
+  - tells the agent to choose a font profile from what the report contains and to check
+    `preflight.fonts.cjk_available` first; `0.11.0` made profiles resolvable but nothing used them.
+
+## [0.11.0] - 2026-11-09
+
+### Added
+- Report:
+  - per-report font profiles with cross-platform CJK chains. `resolve_fonts(profile)` returns an
+    immutable per-report resolution; fonts had been a module-level mutable dict resolved once per
+    process, so two reports with different typefaces could corrupt each other.
+  - a host with no CJK face no longer renders Chinese as `[U+XXXX]` silently: `preflight` reports
+    `cjk_available` and `report.fonts` records what was resolved.
+  - candidate chains cover macOS, Linux and Windows; only `.ttf`/`.ttc`, because ReportLab rejects
+    `.otf` CFF outlines.
+- Tools:
+  - `preflight` reports the renderer, dependency versions and font coverage.
+
+## [0.10.4] - 2026-11-09
+
+### Fixed
+- Report:
+  - superscript/subscript characters drawn as caret notation are tracked separately
+    (`transliterated_codepoints`) instead of being reported as missing glyphs.
+
+## [0.10.3] - 2026-11-09
+
+### Fixed
+- Report:
+  - sub/superscript glyphs missing from the embedded faces are rewritten (`m⁻¹` → `m^-1`) rather than
+    printed as tofu.
+
+## [0.10.2] - 2026-11-09
+
+### Fixed
+- Units:
+  - dimension formulas use plain caret notation; the Unicode superscript minus (U+207B) existed in no
+    text face. `rate`'s preferred unit became `1/s`.
+
+## [0.10.1] - 2026-11-09
+
+### Fixed
+- Units:
+  - short quantity-name aliases must match the whole name; `k` no longer swallowed `k_times_dt_max`.
+  - `unit_scale` issues report as 惯例差异 rather than 需修正.
+
+## [0.10.0] - 2026-11-09
+
+### Added
+- Units:
+  - dimensional checking (`quantities` on `finalize`): a recorded number carries a unit, a dimension
+    and an uncertainty, and a wrong dimension blocks before the conclusion is written.
+- LaTeX:
+  - standalone `report.tex` next to the PDF as an optional same-source export; it is never compiled
+    and the PDF never depends on TeX.
+- Report:
+  - inline `\figure{id}` places a plot beside its claim instead of only in a trailing figure block.
+
+## [0.9.3] - 2026-11-08
+
+### Fixed
+- Bibliography:
+  - metadata hygiene from EndnoteTweak: a reference list renders as
+    `第一作者 et al, 末位作者, 年, 期刊, 标题, DOI` grouped under "以下文献报道了…", with `[n]`
+    continuous across sections.
+
+## [0.9.2] - 2026-11-08
+
+### Fixed
+- Records:
+  - literature reference rendering and author-name handling.
+
+## [0.9.1] - 2026-11-08
+
+### Fixed
+- Records:
+  - a flag read helper no longer depends on a previously imported symbol.
+- Report:
+  - clip over-long table cells without breaking a code span in half.
+
+## [0.9.0] - 2026-11-07
+
+### Added
+- Bibliography:
+  - `bibtex_index.py` plus `bibtex`/`bibtex_path` on `finalize`, and the `references`,
+    `reference_sections`, `citations`, `synthesis`, `search_strategy` fields.
+- Records:
+  - three record types (`experiment`, `analysis`, `literature_review`) that switch the report's
+    middle sections while keeping the numbered spine.
+
+## [0.7.2] - 2026-11-07
+
+### Fixed
+- Report:
+  - main title renders in the heading face rather than the body face.
+
+## [0.7.1] - 2026-11-07
+
+### Added
+- Report:
+  - CJK-aware tokenisation and per-glyph font registration, so one paragraph can mix Times, Songti
+    and Menlo without tofu.
+  - `examples/plot_style.py` as the plotting style the skill tells an agent to use.
+
+## [0.7.0] - 2026-11-07
+
+### Added
+- Report:
+  - the numbered Chinese section spine (目的 / 策略 / 方法和计划 / 材料 / 结果 / 结论和不足 / 下一步 /
+    经验教训 / 空间统计) with numbered subsections, `replica #n` / `retry #n` suffixes and the fact
+    table under the header.
+  - footnotes and endnotes.
+
+### Changed
+- Records:
+  - `_specific()` rejects vague failure text (`failed`, `无结果`, `见日志`), enforcing the lab-record
+    rule that a failure states what broke.
+
+## [0.6.2] - 2026-11-07
+
+### Fixed
+- Records:
+  - space usage is reported in human units (B/KB/MB/GB), not raw bytes.
+
+## [0.6.1] - 2026-11-07
+
+### Changed
+- Tools:
+  - tightens the declared input schemas to what the library actually accepts.
+
+## [0.6.0] - 2026-11-07
+
+The report-format release: the renderer became a real fixed-layout typesetter.
+
+### Added
+- Report:
+  - tables as a real grid, fenced code blocks with language highlighting, inline code, restrained
+    bold/italic, `~~strikethrough~~` with a stated reason, and underline for key data.
+  - a page break between the record body and the 工件与溯源 section.
+  - `\pagebreak` and a bounded figure pipeline with captions.
+
+## [0.5.0] - 2026-11-06
+
+### Added
+- Skill:
+  - documents the `uv`-managed `levin_scratch/.venv` the examples run in.
+
+## [0.4.1] - 2026-11-06
+
+### Changed
+- Records:
+  - remote originals stay remote: raw data is not copied back, processing runs on the host, and only
+    lightweight results come back. A remote-sourced entry names `remote_host` + `remote_path`, and
+    landing a copy also needs `remote_copy_permission`.
+
+## [0.4.0] - 2026-11-06
+
+### Added
+- Records:
+  - `source_origin` (`local_original`/`remote_copy`/`unspecified`) with `remote_host`, `remote_path`
+    and `remote_copy_permission`; a remote original above 64 MiB is refused even with permission.
+  - space usage and its delta, measured against an init baseline.
+
+## [0.3.2] - 2026-11-06
+
+### Fixed
+- Records:
+  - index search covers run commands, failures, parameters, environments and artifact locations, so a
+    script name or a failure reason is findable.
+
+## [0.3.1] - 2026-11-06
+
+### Fixed
+- Records:
+  - re-registering a raw artifact whose file was absent at first registration refreshes it in place
+    instead of appending a duplicate that `validate` then warns about forever.
+
+## [0.3.0] - 2026-11-06
+
+### Fixed
+- Records:
+  - a blocked `finalize` leaves `execution_status` at `wip` instead of committing a terminal status
+    with no PDF.
+
+## [0.2.0] - 2026-11-06
+
+### Changed
+- Docs:
+  - README rewritten to say what the plugin is for and what it refuses to do.
+
+## [0.1.1] - 2026-11-06
+
+### Fixed
+- Report:
+  - inline styling no longer drops text at a run boundary.
+
+## [0.1.0] - 2026-11-06
+
+### Added
+- Records:
+  - stable `exp-<uuid32>` identities, one canonical `manifest.json` per experiment, immutable
+    `revisions/`, append-only checkpoints, artifact and run registration by reference, and
+    `validate` separated from `finalize`.
+  - filelock plus atomic writes, schema validation, and a bounded SHA-256 over registered files.
+- Tools:
+  - the seven `research_record_*` tools: `init`, `checkpoint`, `register_artifact`, `register_run`,
+    `validate`, `finalize`, `index`.
+- Report:
+  - fixed-layout A4 PDF via ReportLab with an embedded font stack, and the rule that PDF is a
+    generated deliverable, never the canonical record.
+- Skill:
+  - `levin-research-notebook-runtime`, the agent-facing workflow.

@@ -146,8 +146,12 @@ SCHEMA = {
  'hypothesis':{'type':'string'},'expected_result':{'type':'string'},'lessons':{'type':'array','items':{'type':'string'},'maxItems':100},'plans':{'type':'array','items':{'type':'string'},'maxItems':100},'execution_status':{'enum':['wip','success','failed']},
  'interpretation':{'type':'string'},'limitations':{'type':'string'},'retention':{'type':'string'},
  'agents':{'type':'array','items':{'type':'string'},'uniqueItems':True},
- 'checkpoints':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['id','created_at','agent_id','kind','text','evidence_ids'], 'properties':{'id':{'type':'string'},'created_at':{'type':'string'},'agent_id':{'type':'string'},'kind':{'enum':['method','observation','failure','conclusion','resume','note']},'text':{'type':'string','minLength':1},'evidence_ids':{'type':'array','items':{'type':'string'}},'title':{'type':'string'},'replica':{'type':['integer','null']},'retry':{'type':['integer','null']},'when_note':{'type':'string'},'refers_to':{'type':['string','null']},'supersedes':{'type':['string','null']}}}},
- 'artifacts':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['id','created_at','role','location','external','description','input_ids','script_id','run_id','sha256','checksum_origin','size_bytes','availability','conditions'], 'properties':{'id':{'type':'string'},'created_at':{'type':'string'},'role':{'enum':['raw','derived','script','figure','log','input','table','deliverable']},'location':{'type':'string','minLength':1},'external':{'type':'boolean'},'description':{'type':'string'},'input_ids':{'type':'array','items':{'type':'string'}},'script_id':{'type':['string','null']},'run_id':{'type':['string','null']},'sha256':{'type':['string','null'],'pattern':'^[a-f0-9]{64}$'},'source_origin':{'enum':['local_original','remote_copy','unspecified']},'remote_host':{'type':['string','null']},'remote_path':{'type':['string','null']},'remote_copy_permission':{'type':['string','null']},'reference_id':{'type':['string','null']},'checksum_origin':{'enum':['computed','supplied_unverified','not_computed']},'size_bytes':{'type':['integer','null'],'minimum':0},'availability':{'enum':['local','missing','external_unverified']},'conditions':{'type':'object'}}}},
+ 'checkpoints':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['id','created_at','agent_id','kind','text','evidence_ids'], 'properties':{'id':{'type':'string'},'created_at':{'type':'string'},'agent_id':{'type':'string'},'kind':{'enum':['method','observation','failure','conclusion','conditional','resume','note']},'text':{'type':'string','minLength':1},'evidence_ids':{'type':'array','items':{'type':'string'}},'title':{'type':'string'},'replica':{'type':['integer','null']},'retry':{'type':['integer','null']},'when_note':{'type':'string'},'refers_to':{'type':['string','null']},'supersedes':{'type':['string','null']}}}},
+ 'artifacts':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['id','created_at','role','location','external','description','input_ids','script_id','run_id','sha256','checksum_origin','size_bytes','availability','conditions'], 'properties':{'id':{'type':'string'},'created_at':{'type':'string'},'role':{'enum':['raw','derived','script','figure','log','input','table','deliverable']},'location':{'type':'string','minLength':1},'external':{'type':'boolean'},'description':{'type':'string'},'input_ids':{'type':'array','items':{'type':'string'}},'script_id':{'type':['string','null']},'run_id':{'type':['string','null']},'sha256':{'type':['string','null'],'pattern':'^[a-f0-9]{64}$'},'source_origin':{'enum':['local_original','remote_copy','unspecified']},'remote_host':{'type':['string','null']},'remote_path':{'type':['string','null']},'remote_copy_permission':{'type':['string','null']},'reference_id':{'type':['string','null']},'checksum_origin':{'enum':['computed','supplied_unverified','not_computed']},'size_bytes':{'type':['integer','null'],'minimum':0},'availability':{'enum':['local','missing','external_unverified']},'conditions':{'type':'object'},
+   # A regenerated figure is a normal scientific event, not tampering, so an artifact
+   # carries how many times its bytes were re-registered and whether it is retired.
+   'revision':{'type':'integer','minimum':1},'retired':{'type':'boolean'},
+   'supersedes':{'type':['string','null']},'superseded_by':{'type':['string','null']}}}},
  'runs':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['id','created_at','backend','external_id','execution_status','command','parameters','environment','input_ids','output_ids','failure'], 'properties':{'id':{'type':'string'},'created_at':{'type':'string'},'backend':{'enum':['local','levin','slurm','external']},'host':{'type':'string','minLength':1},'external_id':{'type':'string'},'reference_id':{'type':['string','null']},'execution_status':{'enum':['wip','success','failed']},'command':{'type':'string'},'parameters':{'type':'object'},'environment':{'type':'object'},'input_ids':{'type':'array','items':{'type':'string'}},'output_ids':{'type':'array','items':{'type':'string'}},'failure':{'type':'string'}}}},
  'visualization':{'type':['object','null'],'additionalProperties':False,'required':['beneficial','reason','figure_ids','reviewed_by'], 'properties':{'beneficial':{'type':'boolean'},'reason':{'type':'string','minLength':1},'figure_ids':{'type':'array','items':{'type':'string'}},'reviewed_by':{'type':'string','minLength':1}}},
  'reports':{'type':'array','items':{'type':'object'}},'requests':{'type':'object'},
@@ -274,11 +278,19 @@ class Notebook:
                     continue  # index/validate expose corrupt records; never rewrite them
                 if candidate['task_id'] == task_id: matches.append(p.parent.name)
             if len(matches)>1: raise NotebookError('Duplicate task identity; explicit repair required')
-            if experiment_id and matches and experiment_id != matches[0]: raise NotebookError('task_id and experiment_id conflict')
+            # An explicit experiment_id is an unambiguous statement of which record the
+            # caller means, so it resumes that record even when the title or objective
+            # text differs. A parent session taking over work a subagent started cannot
+            # reproduce the original wording, and requiring it byte-for-byte made
+            # hand-off impossible — the only alternative was a duplicate record.
+            taken_over = bool(experiment_id) and (self._dir(experiment_id)/'manifest.json').is_file()
+            if experiment_id and matches and experiment_id != matches[0] and not taken_over:
+                raise NotebookError('task_id and experiment_id conflict')
             eid = experiment_id or (matches[0] if matches else None)
             if eid:
                 m=self._load(eid)
-                if m['task_id'] != task_id or m['objective'] != objective or m['title'] != title: raise NotebookError('Resume identity conflicts with recorded task; use a new task_id')
+                if not taken_over and (m['task_id'] != task_id or m['objective'] != objective or m['title'] != title):
+                    raise NotebookError('Resume identity conflicts with recorded task; use a new task_id')
                 patched = False
                 if expected_result and not m.get('expected_result'):
                     m['expected_result']=expected_result; patched=True
@@ -332,6 +344,9 @@ class Notebook:
         if refers_to is not None: text(refers_to,'refers_to',limit=200)
         if supersedes is not None: text(supersedes,'supersedes',limit=200)
         if kind=='failure': _specific(body,'failure checkpoint')
+        if kind=='conditional' and not refers_to:
+            raise NotebookError('A conditional checkpoint must name what it reasons about: pass refers_to '
+                                '(the observation or conclusion it depends on)')
         p=dict(op='checkpoint',agent_id=agent_id,kind=kind,body=body,evidence_ids=list(evidence_ids),execution_status=execution_status,title=title,replica=replica,retry=retry,when_note=when_note,refers_to=refers_to,supersedes=supersedes)
         def change(m):
             arts=_known_artifacts(m)
@@ -345,14 +360,28 @@ class Notebook:
                                         f'ids only, not checkpoint ids. Known: {_sample_ids(arts)}')
                 resolved.append(target['id'])
             if kind=='conclusion' and not resolved: raise NotebookError('Conclusions require evidence references')
+            # refers_to used to be free text that nobody checked, so a typo silently
+            # produced a cross-reference to nothing. A value shaped like a checkpoint id
+            # must now exist; prose stays allowed for "see method 2".
+            if refers_to and re.fullmatch(r'checkpoint-[0-9a-f]{32}', refers_to):
+                if not any(c['id']==refers_to for c in m['checkpoints']):
+                    raise NotebookError(f'refers_to names a checkpoint that does not exist: {refers_to!r}')
             if supersedes:
                 earlier=[c for c in m['checkpoints'] if c['id']==supersedes]
                 if not earlier:
                     raise NotebookError(f'supersedes must name an earlier checkpoint id (checkpoint-…); got {supersedes!r}. '
                                         'Checkpoints are not artifacts or runs, and they have no alias.')
-                if earlier[0]['kind'] not in ('conclusion','observation','method'):
-                    raise NotebookError(f'cannot supersede a {earlier[0]["kind"]} checkpoint; only an earlier conclusion, '
-                                        'observation or method is correctable (a failure stays as it happened)')
+                earlier_kind=earlier[0]['kind']
+                if earlier_kind not in ('conclusion','observation','method','note'):
+                    raise NotebookError(f'cannot supersede a {earlier_kind} checkpoint; only an earlier conclusion, '
+                                        'observation, method or note is correctable (a failure stays as it happened, and a '
+                                        'conditional prediction is settled by the next result, not rewritten)')
+                # A note renders in the trailing 恢复与备注 section. Letting a note replace
+                # an observation moved the correction out of 实验结果 while the superseded
+                # observation stayed there, struck through, pointing at nothing.
+                if earlier_kind!='note' and kind=='note':
+                    raise NotebookError(f'a note cannot replace a {earlier_kind}; write the correction as a '
+                                        f'{earlier_kind} so it renders in the same section as the text it corrects')
             if execution_status: m['execution_status']=execution_status
             c=dict(id=uid('checkpoint'),created_at=now(),agent_id=agent_id,kind=kind,text=body,evidence_ids=resolved,title=title,replica=replica,retry=retry,when_note=when_note,refers_to=refers_to,supersedes=supersedes)
             m['checkpoints'].append(c)
@@ -382,9 +411,11 @@ class Notebook:
         return (str(resolved.relative_to(self.workspace)) if resolved.is_relative_to(self.workspace) else str(resolved)),not resolved.is_relative_to(self.workspace),resolved
 
     def register_artifact(self,eid,artifact,request_id=None):
-        allowed={'role','location','description','input_ids','script_id','run_id','sha256','conditions','source_origin','remote_host','remote_path','remote_copy_permission','reference_id'}
+        allowed={'role','location','description','input_ids','script_id','run_id','sha256','conditions','source_origin','remote_host','remote_path','remote_copy_permission','reference_id','retired','supersedes'}
         if set(artifact)-allowed: raise NotebookError('Unknown artifact metadata fields')
         artifact=dict(artifact)   # never mutate the caller's object; a replay must fingerprint identically
+        if 'retired' in artifact and not isinstance(artifact['retired'],bool):
+            raise NotebookError('retired must be true or false')
         reference_id=artifact.get('reference_id')
         if reference_id is not None: text(reference_id,'reference_id',limit=60)
         source_origin=artifact.get('source_origin','unspecified')
@@ -471,7 +502,34 @@ class Notebook:
                 if old['location']==location and old['role']==artifact['role']:
                     if old['role']=='raw' and old['sha256'] and sha and sha!=old['sha256']: raise NotebookError('Raw evidence changed; original record retained')
                     existing=old
+            # An alias that resolves to two different artifacts is worse than a missing
+            # one: the lookup silently picks the first, so a citation points at the wrong
+            # evidence with no error anywhere. A run and an artifact may share an alias on
+            # purpose — both then name the same bibliography entry, and resolution is
+            # artifact-first by design.
+            if reference_id:
+                taken=[old for old in m['artifacts']
+                       if old.get('reference_id')==reference_id and old is not existing]
+                if taken:
+                    raise NotebookError(f'reference_id {reference_id!r} already names {taken[0]["id"]} '
+                                        f'({taken[0]["location"]}); aliases must be unique across artifacts')
+            retired=bool(artifact.get('retired',existing.get('retired',False) if existing is not None else False))
+            supersedes=artifact.get('supersedes')
+            if supersedes is not None:
+                target=_resolve_artifact(str(supersedes),known)
+                if target is None:
+                    raise NotebookError(f'supersedes names an unknown artifact {supersedes!r}; pass an artifact_id or a '
+                                        f'registered reference_id. Known: {_sample_ids(known)}')
+                if target['id']==(existing or {}).get('id'):
+                    raise NotebookError('an artifact cannot supersede itself')
+                supersedes=target['id']
             if existing is not None and (existing['role'] != 'raw' or not existing['sha256'] or existing['sha256'] == sha):
+                # A regenerated figure is a normal scientific event. Counting the times the
+                # bytes were re-registered, and reporting the aliases a caller asked to
+                # change, keeps that distinguishable from tampering.
+                changed=[name for name in ('description','input_ids','script_id','run_id','conditions')
+                         if name in artifact and artifact[name]!=existing.get(name)]
+                previous_revision=existing.get('revision') or 1
                 existing.update(sha256=sha,checksum_origin=origin,size_bytes=size,availability=availability,
                                 source_origin=source_origin,remote_host=remote_host,remote_path=remote_path,remote_copy_permission=permission,
                                 # omit means keep: a refresh must not silently erase the alias
@@ -480,12 +538,25 @@ class Notebook:
                                 input_ids=artifact.get('input_ids',existing['input_ids']),
                                 script_id=artifact.get('script_id',existing['script_id']),
                                 run_id=artifact.get('run_id',existing['run_id']),
-                                conditions=artifact.get('conditions',existing['conditions']))
+                                conditions=artifact.get('conditions',existing['conditions']),
+                                retired=retired,
+                                supersedes=supersedes if supersedes is not None else existing.get('supersedes'),
+                                revision=previous_revision+1)
+                refreshed=[f'artifact revision {previous_revision} -> {previous_revision+1}']
+                if changed: refreshed.append('metadata also updated: '+', '.join(sorted(changed)))
                 return {'artifact_id':existing['id'],'sha256':sha,'checksum_origin':origin,'availability':availability,'refreshed':True,
+                        'revision':existing['revision'],'changed_fields':sorted(changed),
                         'source_origin':source_origin,'remote_host':remote_host,'remote_path':remote_path,'remote_copy_permission':permission,
-                        'warnings':([] if sha else ['Still no checksum: the file is absent or exceeds the 64 MiB per-operation hash budget'])}
-            a=dict(id=uid('artifact'),created_at=now(),role=artifact['role'],source_origin=source_origin,remote_host=remote_host,remote_path=remote_path,remote_copy_permission=permission,reference_id=reference_id,location=location,external=external,description=artifact.get('description',''),input_ids=artifact.get('input_ids',[]),script_id=artifact.get('script_id'),run_id=artifact.get('run_id'),sha256=sha,checksum_origin=origin,size_bytes=size,availability=availability,conditions=artifact.get('conditions',{}))
+                        'warnings':refreshed+([] if sha else ['Still no checksum: the file is absent or exceeds the 64 MiB per-operation hash budget'])}
+            a=dict(id=uid('artifact'),created_at=now(),role=artifact['role'],source_origin=source_origin,remote_host=remote_host,remote_path=remote_path,remote_copy_permission=permission,reference_id=reference_id,location=location,external=external,description=artifact.get('description',''),input_ids=artifact.get('input_ids',[]),script_id=artifact.get('script_id'),run_id=artifact.get('run_id'),sha256=sha,checksum_origin=origin,size_bytes=size,availability=availability,conditions=artifact.get('conditions',{}),revision=1,retired=retired,supersedes=supersedes,superseded_by=None)
             m['artifacts'].append(a)
+            # Record the retirement on the artifact it replaces, so a reader following the
+            # chain lands on the current figure instead of an orphan.
+            if supersedes:
+                for old in m['artifacts']:
+                    if old['id']==supersedes:
+                        old['retired']=True
+                        old['superseded_by']=a['id']
             warnings=[]
             if availability=='missing': warnings.append('Registered file is absent; validate reports it as missing until it exists')
             elif availability=='external_unverified': warnings.append('External reference was not contacted; no checksum and no availability proof')
@@ -541,18 +612,50 @@ class Notebook:
         if errors: return {'valid':False,'errors':errors,'warnings':warnings}
         arts={a['id']:a for a in m['artifacts']}; runs={r['id']:r for r in m['runs']}
         if len(arts)!=len(m['artifacts']) or len(runs)!=len(m['runs']): errors.append('Duplicate evidence identifiers')
+        # Decide which files get re-hashed before the structural loop runs. The budget used
+        # to be spent in manifest order, so one large trajectory could consume all 64 MiB
+        # and leave every figure unverified while the record still reported valid.
+        plan={}
+        candidates=[]
+        for a in m['artifacts']:
+            if a.get('retired') or not a['sha256']: continue
+            try: _,_,path=self.location(a['location'])
+            except Exception: continue
+            if path is None or not path.is_file(): continue
+            candidates.append((path.stat().st_size, a['id'], path, a['sha256']))
+        for size, aid, path, recorded in sorted(candidates, key=lambda item: (item[0], item[1])):
+            if size<=budget:
+                budget-=size
+                plan[aid]=None if digest(path)==recorded else 'mismatch'
+            else:
+                plan[aid]='skipped'
         for a in m['artifacts']:
             aid=a['id']
             try: _,_,path=self.location(a['location'])
             except Exception as e: errors.append(f'{aid}: {e}'); continue
+            if a.get('retired'):
+                # A retired artifact is history. Checking that its file still exists, or
+                # still hashes the same, would make deleting a superseded figure a
+                # permanent error with no way to clear it.
+                continue
             if path is None: warnings.append(f'{aid}: external reference not contacted or verified')
             elif not path.is_file(): errors.append(f'{aid}: missing local file {a["location"]}')
             elif a['sha256']:
-                size=path.stat().st_size
-                if size<=budget:
-                    budget-=size
-                    if digest(path)!=a['sha256']: errors.append(f'{aid}: checksum mismatch')
-                else: warnings.append(f'{aid}: checksum not reverified (64 MiB total budget)')
+                verdict=plan.get(aid)
+                if verdict=='mismatch':
+                    # A regenerated figure is a normal event: the bytes changed because the
+                    # author improved the plot, not because evidence was tampered with.
+                    # Re-registering the same (location, role) is the documented repair, so
+                    # this is a warning that names the revision, while raw and input evidence
+                    # — which must never change — keeps the error.
+                    revision=a.get('revision') or 1
+                    if a['role'] in ('raw','input'):
+                        errors.append(f'{aid}: checksum mismatch')
+                    else:
+                        warnings.append(f'{aid}: checksum changed since revision {revision}; re-register the same '
+                                        f'(location, role) to record revision {revision+1}, or set retired=true if it is obsolete')
+                elif verdict=='skipped':
+                    warnings.append(f'{aid}: checksum not reverified (64 MiB total budget)')
             else: warnings.append(f'{aid}: no checksum recorded')
             if path and a['role'] in ('raw','input') and path.is_relative_to(self.scratch): errors.append(f'{aid}: raw/input evidence in scratch')
             if set(a['input_ids'])-arts.keys(): errors.append(f'{aid}: unknown input reference')
@@ -634,6 +737,22 @@ class Notebook:
             for a in m['artifacts']:
                 if a['external'] and '://' not in a['location']:
                     result['warnings'].append(f'{a["id"]}: path {a["location"]} is outside workspace_dir; this record is not portable to another machine')
+            # A figure nobody cites renders in a plate at the end of the results section,
+            # where the prose never points at it. One aggregated line, not one per file:
+            # eighteen separate warnings bury the real finding.
+            body_kinds=('method','observation','failure','conclusion','conditional','resume')
+            cited=set()
+            for c in m['checkpoints']:
+                if c['kind'] in body_kinds:
+                    cited.update(c.get('evidence_ids') or [])
+            orphans=[a['id'] for a in m['artifacts']
+                     if a['role']=='figure' and not a.get('retired') and a['id'] not in cited]
+            if orphans:
+                result['warnings'].append(
+                    f'{len(orphans)} 个图未被正文任何位置引用，将排在图表块且正文没有指针：'
+                    + ', '.join(orphans[:6]) + ('…' if len(orphans)>6 else '')
+                    + '；在对应 observation/conclusion 的 evidence_ids 里引用该图，'
+                      '或在正文用 \\fig{工件ID} 指定引用位置')
             # Glyph coverage belongs in validate: the author can still reword an
             # observation here, whereas after finalize the PDF already has tofu in it.
             try:
@@ -858,6 +977,34 @@ class Notebook:
                 'removed_count':len(removable),'reclaimable_bytes':total,
                 'reclaimable':human_bytes(total),'kept':sorted(keep_ids),'dry_run':dry_run}
 
+    def prune_revisions(self, eid, keep=20, dry_run=False):
+        """Drop old full-manifest snapshots, keeping the newest `keep` plus the current one.
+
+        Every mutation writes a whole snapshot, so a record with a few hundred checkpoints
+        carries megabytes of near-identical history and nothing could reclaim it:
+        `prune_reports` deliberately never touches `revisions/`. Hand-edited record copies
+        (`human-record-*.md`) are never removed — they are the only copy of an edit.
+        """
+        if not isinstance(keep,int) or isinstance(keep,bool) or keep<1:
+            raise NotebookError('keep must be a positive integer')
+        m=self._load(eid)
+        folder=self._dir(eid)/'revisions'
+        if not folder.is_dir():
+            return {'ok':True,'experiment_id':eid,'removed':[],'removed_count':0,
+                    'reclaimable_bytes':0,'reclaimable':human_bytes(0),'kept':0,'dry_run':dry_run}
+        snapshots=sorted(p for p in folder.iterdir()
+                         if p.is_file() and re.fullmatch(r'\d{6}-[0-9a-f]{32}\.json',p.name))
+        # Always keep at least one, and never drop the snapshot that matches the manifest
+        # currently on disk: it is what makes "which bytes were recorded then" answerable.
+        removable=snapshots[:-keep] if len(snapshots)>keep else []
+        total=sum(p.stat().st_size for p in removable)
+        if not dry_run:
+            for path in removable: path.unlink()
+        return {'ok':True,'experiment_id':eid,'removed':[p.name for p in removable],
+                'removed_count':len(removable),'reclaimable_bytes':total,
+                'reclaimable':human_bytes(total),'kept':len(snapshots)-len(removable),
+                'dry_run':dry_run}
+
     def index(self,query='',limit=100,offset=0,include_summary=False):
         rows=[]; errors=[]
         paths=sorted((self.root/'experiments').glob('exp-*/manifest.json'))
@@ -905,6 +1052,32 @@ class Notebook:
         return str(value).replace('|','\\|').replace('\n',' ').strip() or 'not recorded'
 
     @staticmethod
+    @staticmethod
+    def _figure_lines(m, c):
+        """Place the figures this checkpoint cites right after it.
+
+        The citation is the reference point: a reader who reaches the sentence that leans
+        on a plot should find the plot on the same spread, not in a plate at the end of
+        the section. The renderer numbers by first appearance and skips a repeat, so a
+        figure cited twice lands at its earliest citation.
+        """
+        figures={a['id'] for a in m['artifacts'] if a['role']=='figure' and not a.get('retired')}
+        return [f'\\figure{{{e}}}' for e in (c.get('evidence_ids') or []) if e in figures]
+
+    @staticmethod
+    def _see_also(m, c):
+        """A readable cross-reference: the target's own heading, never a raw id.
+
+        `(see checkpoint-…)` was printed verbatim, which is English boilerplate wrapped
+        around a 32-character hex string — unreadable and unclickable in a PDF.
+        """
+        target=c.get('refers_to')
+        if not target: return ''
+        earlier=next((x for x in m['checkpoints'] if x['id']==target), None)
+        label=(earlier or {}).get('title') or (earlier or {}).get('kind')
+        return f'（见「{label}」）' if label else f'（见 {target}）'
+
+    @staticmethod
     def _section(lines, kind, heading_title, m, numbered=True):
         items=[c for c in m['checkpoints'] if c['kind']==kind]
         if not items: return
@@ -914,11 +1087,13 @@ class Notebook:
             suffix=''
             if c.get('replica'): suffix+=f' replica #{c["replica"]}'
             if c.get('retry'): suffix+=f' retry #{c["retry"]}'
-            if c.get('refers_to'): suffix+=f' (see {c["refers_to"]})'
+            suffix+=Notebook._see_also(m, c)
             lines.append(f'### {index}. {label}{suffix}' if numbered else f'### {label}{suffix}')
             if c.get('when_note'): lines += ['', f'> {c["when_note"]}']
             lines += ['', c['text'], '']
-            if c['evidence_ids']: lines.append('Evidence: '+', '.join(f'`{e}`' for e in c['evidence_ids']))
+            if c['evidence_ids']: lines.append('证据：'+', '.join(f'`{e}`' for e in c['evidence_ids']))
+            figures=Notebook._figure_lines(m, c)
+            if figures: lines += ['']+figures
             lines.append('')
 
     # ---------- section builders: each returns the lines of one numbered section ----------
@@ -964,8 +1139,15 @@ class Notebook:
         out=['| 类别 | 内容 |','| --- | --- |']
         host_text=', '.join(h+(' / '+', '.join(sorted(platforms)) if platforms else '') for h in hosts) or '未记录'
         out.append(f"| 执行主机 / 架构 | {Notebook._cell(host_text)} |")
-        datasets=[a for a in m['artifacts'] if a['role'] in ('raw','input','derived','table')]
-        out.append(f"| 数据集 | {Notebook._cell(', '.join('`'+a['location']+'`（'+a['role']+'）' for a in datasets) or '未记录')} |")
+        # Materials are what the work consumed: originals and inputs. Derived tables and
+        # figures are results, not materials, and listing them here duplicated the
+        # appendix while turning one table cell into four lines of paths.
+        datasets=[a for a in m['artifacts'] if a['role'] in ('raw','input')]
+        inline=', '.join(f"`{a['location']}`（{a['role']}）" for a in datasets)
+        if len(datasets)>3:
+            out.append(f"| 数据集 | {len(datasets)} 项，逐项见下（原始与输入工件） |")
+        else:
+            out.append(f"| 数据集 | {Notebook._cell(inline or '未记录')} |")
         scripts=[a for a in m['artifacts'] if a['role']=='script']
         out.append(f"| 脚本 | {Notebook._cell(', '.join('`'+a['location']+'`' for a in scripts) or '未记录')} |")
         software=list((m.get('materials') or {}).get('software') or [])
@@ -975,12 +1157,24 @@ class Notebook:
                 entry=f'{name} {version}'
                 if entry not in software: software.append(entry)
         out.append(f"| 软件与版本 | {Notebook._cell(', '.join(software) or '未记录')} |")
-        params=[f"`{json.dumps(r['parameters'], ensure_ascii=False)}`" for r in m['runs'] if r['parameters']]
-        out.append(f"| 非默认参数 | {Notebook._cell(', '.join(params) or '未记录（默认参数未列出）')} |")
+        # Parameters belong to the run that used them, and the appendix prints each run's
+        # invocation verbatim. A 600-character JSON blob inside a table cell was unreadable
+        # and, worse, unverifiable: it looked authoritative while being truncated.
+        params=[(r['id'], json.dumps(r['parameters'], ensure_ascii=False)) for r in m['runs'] if r['parameters']]
+        blob=', '.join(value for _, value in params)
+        if not params:
+            out.append("| 非默认参数 | 未记录（默认参数未列出） |")
+        elif len(blob)>280 or len(params)>2:
+            out.append(f"| 非默认参数 | {len(params)} 个 run 的参数逐条见附录「执行溯源」（完整命令、参数与环境） |")
+        else:
+            out.append(f"| 非默认参数 | {Notebook._cell(', '.join(f'`{value}`' for _, value in params))} |")
         out.append(f"| 环境位置 | {Notebook._cell('`'+m['environment_location']+'`' if m.get('environment_location') else '未记录')} |")
         extra=(m.get('materials') or {}).get('notes')
         if extra: out.append(f"| 其他 | {Notebook._cell(extra)} |")
         out.append('')
+        if len(datasets)>3:
+            out += ['**原始与输入工件**（完整路径与校验和见附录）','']
+            out += [f"- `{a['id']}`（{a['role']}）：`{a['location']}`" for a in datasets]+['']
         for entry in ((m.get('materials') or {}).get('datasets') or []): out.append(f'- {entry}')
         return out
 
@@ -1032,6 +1226,8 @@ class Notebook:
                 out.append(f"- ~~{label}~~（已由{where}更正）：{c['text']}")
             else:
                 out.append(f"- {label}：{c['text']}")
+            figures=Notebook._figure_lines(m, c)
+            if figures: out += ['']+figures+['']
         if not (res.get('expected_seen') or res.get('unexpected_seen') or any(c['kind']=='observation' for c in m['checkpoints'])):
             out.append('- 未记录观测结果。')
         out += ['','### {s}.2. 没看到什么','']
@@ -1051,7 +1247,12 @@ class Notebook:
     @staticmethod
     def _sec_questions(m):
         strategy=m.get('search_strategy') or {}
-        out=[m.get('purpose') or '未记录研究问题。','']
+        # The header already prints this exact sentence as "为什么要做". Repeating a
+        # 400-character paragraph under section 1 makes the report read like a
+        # template rather than a record, so the section points at it instead.
+        why=(m.get('purpose') or '').strip()
+        shown=(m.get('purpose') or m.get('hypothesis') or '').strip()
+        out=[('立项背景与动机见上文摘要。' if why and why==shown else (m.get('purpose') or '未记录研究问题。')),'']
         if strategy.get('query'): out += [f"检索问题式：`{strategy['query']}`",'']
         scope=[]
         for label, key in (('数据库','databases'),('时间窗','window'),('语种','languages'),('纳排与筛选','screening')):
@@ -1142,6 +1343,8 @@ class Notebook:
         observations=[c for c in m['checkpoints'] if c['kind']=='observation']
         for index, c in enumerate(observations,1):
             out += [f'### {{s}}.{index}. {c.get("title") or "观察"}','',c['text'],'']
+            figures=Notebook._figure_lines(m, c)
+            if figures: out += figures+['']
         return out
 
     @staticmethod
@@ -1176,6 +1379,27 @@ class Notebook:
         return out
 
     @staticmethod
+    def _sec_conditional(m):
+        """Conditional reasoning and falsifiable predictions.
+
+        These have no direct evidence by construction — they say what follows *if* some
+        other observation holds — so they cannot be conclusions, and a note would bury
+        them in the trailing remarks section.
+        """
+        items=[c for c in m['checkpoints'] if c['kind']=='conditional']
+        if not items: return []
+        labels={c['id']:c.get('title') or c['kind'] for c in m['checkpoints']}
+        out=[]
+        for index, c in enumerate(items,1):
+            out += [f'### {{s}}.{index}. {c.get("title") or "条件推演"}','',c['text'],'']
+            if c.get('refers_to'):
+                anchor=labels.get(c['refers_to'], c['refers_to'])
+                out += [f'> 依赖：{anchor}','']
+            figures=Notebook._figure_lines(m, c)
+            if figures: out += figures+['']
+        return out
+
+    @staticmethod
     def _sec_conclusions(m):
         conclusions=[c for c in m['checkpoints'] if c['kind']=='conclusion']
         superseded={c.get('supersedes') for c in conclusions if c.get('supersedes')}
@@ -1187,6 +1411,8 @@ class Notebook:
                 label=f"~~{label}~~（已被第 {conclusions.index(later)+1 if later else '?'} 条结论取代）"
             out += [f'### {{s}}.{index}. {label}','',c['text'],'']
             if c['evidence_ids']: out += ['','证据：'+', '.join('`'+e+'`' for e in c['evidence_ids']),'']
+            figures=Notebook._figure_lines(m, c)
+            if figures: out += figures+['']
         if not out: out += ['未记录结论。','']
         out += ['**结论解读**：'+(m['interpretation'] or '未填写。'),'',
                 '**不足**：'+(m['limitations'] or '未填写。'),'']
@@ -1227,11 +1453,18 @@ class Notebook:
         a resume is not a method, and a note is not a result."""
         entries=[c for c in m['checkpoints'] if c['kind'] in ('resume','note')]
         if not entries: return []
+        superseded={c.get('supersedes') for c in entries if c.get('supersedes')}
         out=['']
         for c in entries:
             label=c.get('title') or ('续做记录' if c['kind']=='resume' else '备注')
             marker='**续做**' if c['kind']=='resume' else '**备注**'
-            out += [f'- {marker}｜{label}：{c["text"]}']
+            body=c['text']
+            if c['id'] in superseded:
+                later=next((ch for ch in entries if ch.get('supersedes')==c['id']),None)
+                # Strike the text, not the label: a note's default label is the generic
+                # word 备注, so striking that would hide nothing and say nothing.
+                body=f"~~{body}~~（已由下方{'「'+(later.get('title') or '备注')+'」' if later else '后续备注'}更正）"
+            out += [f'- {marker}｜{label}：{body}']
             if c.get('when_note'): out += [f'  > {c["when_note"]}']
             if c['evidence_ids']: out += ['  证据：'+', '.join('`'+e+'`' for e in c['evidence_ids'])]
         out.append('')
@@ -1282,6 +1515,9 @@ class Notebook:
               ('下一步计划', lambda x: Notebook._sec_bullets(x.get('plans'), '暂无后续计划。')),
               ('经验教训', lambda x: Notebook._sec_bullets(x.get('lessons'), '未记录。')),
               ('数据空间统计', Notebook._sec_space)]
+        conditional=('条件推演与可证伪预测', Notebook._sec_conditional) \
+            if any(c['kind']=='conditional' for c in m['checkpoints']) else None
+        if conditional: middle.append(conditional)
         if any(c['kind'] in ('resume','note') for c in m['checkpoints']):
             tail.append(('恢复与备注', Notebook._sec_notes))
         ordered=middle+([extra] if extra else [])+tail
@@ -1338,6 +1574,8 @@ class Notebook:
         for a in m['artifacts']:
             note=a.get('source_origin','unspecified')+(' @ '+a['remote_host'] if a.get('remote_host') else '')
             if a.get('reference_id'): note+=f" / 文献 {a['reference_id']}"
+            if a.get('retired'): note+=' / 已作废'
+            if (a.get('revision') or 1)>1: note+=f" / rev {a['revision']}"
             lines.append(f"| `{a['id']}` | {a['role']} | {Notebook._cell(a['availability'])} | {Notebook._cell(note)} |")
         if not m['artifacts']: lines.append('| — | — | 未登记工件 | — | — |')
         if m['artifacts']:

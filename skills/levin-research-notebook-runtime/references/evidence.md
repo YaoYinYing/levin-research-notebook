@@ -3,7 +3,7 @@
 ## Checkpoints
 
 `research_record_checkpoint(experiment_id, agent_id, kind, text, ...)` with
-`kind ∈ method | observation | failure | conclusion | resume | note`.
+`kind ∈ method | observation | failure | conclusion | conditional | resume | note`.
 
 One meaningful finding per checkpoint, not one per command. Give each a short `title`: the report
 renders methods, observations, failures and conclusions as numbered subsections grouped under their
@@ -13,13 +13,23 @@ section, and the title is the heading.
 |---|---|
 | `replica`, `retry` | appends `replica #n` / `retry #n` to the heading |
 | `when_note` | a quoted line under the heading, for a method that spans dates |
-| `refers_to` | `见 1. <title>` — cite an earlier entry instead of restating it |
-| `supersedes` | corrects an earlier `conclusion`/`observation`/`method`; the original stays visible, struck through, naming its correction |
+| `refers_to` | `见 1. <title>` — cite an earlier entry instead of restating it; a `checkpoint-…` id must exist |
+| `supersedes` | corrects an earlier `conclusion`/`observation`/`method`/`note`; the original stays visible, struck through, naming its correction |
 | `evidence_ids` | artifacts and runs that support the claim; required for `conclusion` |
 | `execution_status` | `wip`/`success`/`failed` as the record's current state |
 
 A `failure` checkpoint may not be superseded: the failure happened, and rewriting it would be the one
 thing this plugin exists to prevent. Record the recovery as a separate `resume`.
+
+A `conditional` checkpoint is counterfactual reasoning — "if that preprint holds, this model is dead".
+It carries no `evidence_ids` (there is no direct evidence for a counterfactual) and requires
+`refers_to` naming the observation or conclusion it depends on. It renders in its own
+**条件推演与可证伪预测** section. Do not force such reasoning into a `conclusion` (which would need an
+irrelevant citation) or a `note` (which renders at the end, out of the argument).
+
+A `note` may be corrected by a later `note`, but a `note` may not replace an `observation`, `method`
+or `conclusion`: the correction would land in 恢复与备注 while the superseded finding stayed in
+实验结果, struck through and pointing at nothing. Correct a finding with a finding.
 
 `resume` and `note` checkpoints are not methods or results, so they are rendered in a trailing
 **恢复与备注** section instead of the numbered lists: a "picked up the next day" note belongs there, not

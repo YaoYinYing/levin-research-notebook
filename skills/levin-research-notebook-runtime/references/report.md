@@ -12,7 +12,7 @@ an explicit "not recorded" line rather than disappearing, so a gap is visible in
 | 1. 实验目的 | `purpose` only; when it is empty the section prints 未记录研究问题。 (`hypothesis` feeds the header's 为什么要做 line instead) |
 | 2. 实验策略 | `strategy: [{title, text}]` → 2.1, 2.2 … |
 | 3. 实验方法和计划 | `method_plan` bullets, then method checkpoints as 3.1, 3.2 … |
-| 4. 实验材料 | hosts/arch, dataset and script artifacts, `materials`, software versions, non-default parameters |
+| 4. 数据与工具 / 实验材料 | hosts/arch, **raw and input** artifacts (derived tables and figures are results, not materials), script artifacts, `materials`, software versions; above 3 raw/input items the row summarizes and the full list follows as bullets. Non-default parameters are summarized and pointed at the appendix when long — a 600-character JSON blob in a table cell is unreadable and truncates |
 | 5. 实验结果 | 5.1 看到了什么 / 5.2 没看到什么 / 5.3 意外与处置 from `results.*` and observation/failure checkpoints; 5.4 量纲与单位核对 from `quantities` |
 | 6. 实验结论和不足 | conclusion checkpoints, `interpretation`, `limitations` |
 | 7. 下一步计划 | `plans` |
@@ -86,13 +86,42 @@ prints its `$` delimiters literally.
 
 ## Figures
 
-`\figures` dumps every accepted figure at one point. Prefer `\figure{artifact-id}` where the claim is
-made, so a plot sits beside the sentence it supports; anything unreferenced is appended under 其余图表.
-Figures are sized to roughly 62% of the printable height and move to a new page rather than being
-shrunk below readability. Captions come from the artifact description. An unknown `artifact-id` prints
-a visible placeholder instead of failing the render.
+Numbering runs by **first appearance in the document**, not by registration order: a reader who
+meets a figure in passage 3 calls it 图 1 even if it was the fifth artifact you registered. The number
+is reserved the first time the renderer meets that figure and reused afterwards, so reordering the
+body renumbers correctly on its own.
 
-Never shrink a figure to make the layout tidy; let it take its page.
+| Marker | Effect |
+|---|---|
+| `\fig{artifact-id}` | prints `图 N` **and** puts the plot directly after the enclosing paragraph — the reference point decides the position |
+| `\figure{artifact-id}` | puts the plot here without printing a reference |
+| `\figures` | presents whatever the body never cited, under a 图表 heading |
+
+The key may be the artifact id or the image file's stem (`\fig{fig_heatmap_iptm}`). An unknown key
+prints a visible placeholder rather than failing the render.
+
+You rarely write these by hand: `finalize` emits `\figure{…}` for a figure listed in a checkpoint's
+`evidence_ids`, so a plot cited by an observation lands beside that observation. A figure cited by
+several entries is placed at its earliest citation only. What remains — typically figures cited only
+by a `note` — becomes a plate at the end of 实验结果, and `validate` reports them in one aggregated
+warning, because a plate the prose never points at is a defect the reader cannot fix.
+
+To get a figure next to its claim: cite it in the observation or conclusion it supports, or write
+`如 \fig{…} 所示` in a strategy, extra-section or note paragraph. Both are truthful; neither guesses.
+
+Figures are sized to roughly 62% of the printable height and move to a new page rather than being
+shrunk below readability. Captions come from the artifact description. Never shrink a figure to make
+the layout tidy; let it take its page.
+
+Tables are not numbered: a report carries dozens of them, they are position-bound to the argument
+rather than collected, and no in-text reference syntax exists yet. Cite a table by its section
+(`见 5.4`) instead.
+
+## Cross-references
+
+`refers_to` renders as `（见「<标题>」）` using the target's own heading. A raw id never appears in the
+prose: it is unreadable and unclickable in a PDF. A `checkpoint-…` id passed to `refers_to` must
+exist.
 
 ## Glyph coverage
 

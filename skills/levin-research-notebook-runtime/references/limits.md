@@ -53,9 +53,11 @@ Behaviour that is documented where it is used, not here:
   execution/staging of the notebook itself has not been validated and is deliberately disabled.
 - One manifest at most 2 MB, 500 artifacts/runs/checkpoints each; index at most 10,000 records.
   Split campaigns into experiments. Index responses default to 100 with explicit offset/limit.
-- At most 64 MiB hashed per registration and 64 MiB total per validation. Large files remain
-  referenced in place; a supplied digest is labeled `supplied_unverified`. External references
-  are never fetched. Warnings mean incomplete verification, not missing evidence proof.
+- At most 64 MiB hashed per registration and 64 MiB total per validation. Validation spends that
+  budget on the smallest files first, so one large trajectory cannot leave every figure unverified;
+  a skipped check is a warning, never a pass. Large files remain referenced in place; a supplied
+  digest is labeled `supplied_unverified`. External references are never fetched. Warnings mean
+  incomplete verification, not missing evidence proof.
 - Foreground PDF: at most 200,000 characters, 20 figures and 500 pages. No external process,
   code execution, network, renderer daemon or job scheduler. Larger publications use external
   Quarto/Typst explicitly and register the result with its source/run provenance.
@@ -82,10 +84,13 @@ Behaviour that is documented where it is used, not here:
   commands/failures/parameters/environment. It is substring search over a capped 200k haystack, not
   a full-text index; there is no ranking, and results carry summary fields only.
 - Re-registering the same location with the same role refreshes that artifact entry (checksum,
-  availability, description, links) in place, including a raw entry recorded while the file was
-  absent; different roles stay separate records. A raw entry whose recorded checksum differs from
-  the file is never refreshed: the change is rejected and the original record is retained. There is
-  still no unregister tool.
+  availability, description, links) in place and records `revision N+1`, including a raw entry
+  recorded while the file was absent; different roles stay separate records. A raw entry whose
+  recorded checksum differs from the file is never refreshed: the change is rejected and the
+  original record is retained. A changed checksum on a `figure`/`derived` entry is a warning that
+  names both repairs; on `raw`/`input` it stays an error. To retire an obsolete artifact pass
+  `retired: true`, or register its replacement with `supersedes` — a retired entry keeps its
+  history and is exempt from file-existence and checksum checks.
 - Only a successful finalization is stored under its `request_id`. A blocked or render-failed attempt
   leaves the id unconsumed so the identical call can be retried once the gate is cleared.
 - After finalization, later mutations are allowed and `validate` warns that the delivered report is
@@ -104,6 +109,10 @@ Behaviour that is documented where it is used, not here:
   (the newest successful one, or the newest attempt when none succeeded), never touches
   `revisions/` or artifacts, and leaves validate reporting the delivered report as stale because
   the manifest revision moved.
+- Every mutation also writes a whole-manifest snapshot under `revisions/`, so history grows with the
+  edit count (97 snapshots / 6.5 MB on a 36-artifact, 27-checkpoint record).
+  `research_record_prune_revisions` keeps the newest N (default 20) and never removes the
+  `human-record-*.md` copies of hand edits, which are the only record of those changes.
 - On an interrupted write inspect manifest, revisions and pending scratch files. Validation is
   read-only and never repairs evidence. Atomic canonical manifest publication can precede the
   generated Markdown/index; a later authorized mutation refreshes views. Do not automatically

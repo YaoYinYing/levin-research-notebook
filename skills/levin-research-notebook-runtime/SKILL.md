@@ -31,10 +31,13 @@ finalize, in that order, and each file is short enough to load when its stage be
 ## The five stages
 
 1. `research_record_init` — once per task identity; returns `experiment_id` and a scratch directory.
-2. `research_record_checkpoint` — methods, observations, failures, evidence-linked conclusions.
+   Pass `experiment_id` to take over work another session started, even if the wording differs.
+2. `research_record_checkpoint` — methods, observations, failures, evidence-linked conclusions, and
+   `conditional` entries for counterfactual reasoning (requires `refers_to`, no `evidence_ids`).
 3. `research_record_register_artifact` / `research_record_register_run` — the evidence itself.
 4. `research_record_validate` — structural validity now plus every gate `finalize` will apply.
-5. `research_record_finalize` — sources, PDF, space accounting; then `prune_reports` if needed.
+5. `research_record_finalize` — sources, PDF, space accounting; then `prune_reports` / 
+   `prune_revisions` if needed.
 
 ## Invariants — these override convenience
 
@@ -44,7 +47,11 @@ finalize, in that order, and each file is short enough to load when its stage be
   large remote original locally without an explicit permission recorded on the artifact.
 - Units are checked, never converted. A value you recorded is the value the report prints.
 - Nothing is deleted automatically: scratch is retained, revisions are kept, and only
-  `research_record_prune_reports` removes old PDF snapshots, on explicit call.
+  `research_record_prune_reports` / `research_record_prune_revisions` remove old snapshots, on
+  explicit call.
+- A regenerated figure is a normal event: re-register the same `(location, role)` and it records
+  `revision N+1` with a warning, while changed `raw`/`input` evidence stays an error. To retire an
+  obsolete artifact, register its replacement with `supersedes`, or pass `retired: true`.
 - `ok` is not completion. Read `finalized`, `report.render_state` and `validation`; a blocked attempt
   leaves a source-only report folder with no PDF.
 - You choose `font_profile` from the report's content; see [report](references/report.md#fonts).

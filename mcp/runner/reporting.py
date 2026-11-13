@@ -8,6 +8,7 @@ owns figure registration/verification, immutable staging, and source retention.
 from __future__ import annotations
 
 from functools import lru_cache
+import html
 from io import BytesIO
 from pathlib import Path
 import re
@@ -246,20 +247,56 @@ def font_report(profile: str = DEFAULT_PROFILE) -> dict:
 
 _SUBSTITUTABLE = set("₀₁₂₃₄₅₆₇₈₉₊₋⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻")
 
+# One exponent is either drawn with real script glyphs or written in caret notation.
+# Resolving it per character produced "κ^-¹": the missing minus became "^-" while the
+# Latin-1 "¹" stayed a true superscript, so a single exponent looked like two conventions.
+_SCRIPT_RUN = re.compile("[" + "".join(re.escape(c) for c in sorted(_SUBSTITUTABLE)) + "]+")
+
+# A record reaches the renderer as Markdown, where an HTML entity is a character.
+# Printing "&lt;160" instead of "<160" is a renderer defect, not an authoring one.
+_HTML_ENTITY = re.compile(r"&(?:[A-Za-z][A-Za-z0-9]{1,31}|#\d{1,6}|#[xX][0-9a-fA-F]{1,5});")
+_CJK = re.compile(r"[\u2e80-\u9fff\uf900-\ufaff\u3000-\u303f\uff00-\uffef]")
+
+
+def _unescape(text: str) -> str:
+    """Decode the HTML entities a Markdown source legitimately contains."""
+    if "&" not in text:
+        return text
+    return _HTML_ENTITY.sub(lambda match: html.unescape(match.group(0)), text)
+
+
+def _smart_quotes(text: str) -> str:
+    """Straight quotes around Chinese become Chinese quotes.
+
+    Only a pair whose body contains CJK is rewritten, so inch marks, JSON fragments
+    and every quote inside a code span keep their literal form.
+    """
+    if '"' not in text:
+        return text
+
+    def pair(match: "re.Match[str]") -> str:
+        return "“" + match.group(1) + "”" if _CJK.search(match.group(1)) else match.group(0)
+
+    return re.sub(r'"([^"\n]{1,80})"', pair, text)
+
 
 @lru_cache(maxsize=4)
 def _faces_for(profile: str, kind: str = "prose") -> tuple[str, ...]:
     """Faces that actually draw this kind of text, mirroring _Layout._styled.
 
     Prose falls back through the Latin faces and the CJK fallbacks; a code block uses
-    the mono face only. Checking prose against mono made the probe useless: Menlo has
-    ⇒, so a ⇒ in prose passed the probe and still rendered as tofu.
+    the mono face for everything except CJK, which `_styled` routes to the CJK face
+    regardless of style. Probing code against the mono face alone reported every
+    Chinese character inside a fenced block as missing (55 false warnings on one real
+    record) while it rendered correctly.
     """
     info = resolve_fonts(profile)
-    roles = ("m", "mb", "mi") if kind == "code" else ("r", "b", "i", "bi", "songti", "heiti")
+    if kind == "code":
+        roles = ("m", "mb", "mi", "songti", "heiti")
+    else:
+        roles = ("r", "b", "i", "bi", "songti", "heiti")
     faces = [info["fonts"].get(role) or "" for role in roles]
-    if kind != "code":
-        faces += list(info["fallbacks"])
+    faces += list(info["fallbacks"])
     return tuple(dict.fromkeys(face for face in faces if face))
 
 
@@ -525,6 +562,36 @@ class _Layout:
         text = _re.sub("[" + "".join(sup) + "]+", caret, text)
         return _re.sub("[" + "".join(sub) + "]+", under, text)
 
+    def _drawable(self, character: str, style: str) -> bool:
+        """True when some face available for this style can draw the character."""
+        if unicodedata.category(character).startswith("C"):
+            return True
+        key_style = "m" if style == "m" else ("b" if "b" in style else "r")
+        if _is_cjk(character):
+            face = self.faces["heiti"] if key_style in ("b", "bi") else self.faces["songti"]
+        else:
+            face = self.faces.get(key_style, self.faces["r"])
+        return _supports(face, character) or any(_supports(f, character) for f in self.fallbacks)
+
+    def _script_safe(self, text: str, style: str) -> str:
+        """Rewrite a sub/superscript run as a whole when any of its glyphs is missing.
+
+        Resolving an exponent per character produced "κ^-¹": the missing minus became
+        "^-" while the Latin-1 "¹" stayed a real superscript, so one exponent read as
+        two different conventions. A run is now either fully drawn or fully caret.
+        """
+        if not _SCRIPT_RUN.search(text):
+            return text
+
+        def whole(match: "re.Match[str]") -> str:
+            run = match.group(0)
+            if all(self._drawable(ch, style) for ch in run):
+                return run
+            self.transliterated.update(ord(ch) for ch in run)
+            return self._substitute(run)
+
+        return _SCRIPT_RUN.sub(whole, text)
+
     def _styled(self, character: str, style: str) -> tuple[str, str]:
         key = (character, style)
         cached = self.glyph_cache.get(key)
@@ -560,7 +627,7 @@ class _Layout:
     def _atoms_raw(self, text: str, size: float, indent: float):
         """Same greedy wrap, but the text is literal: no inline Markdown parsing."""
         atoms = []
-        for character in text.expandtabs(4):
+        for character in self._script_safe(text, "m").expandtabs(4):
             font, display = self._styled(character, "m")
             key = (font, display, size)
             if key not in self.width_cache:
@@ -580,7 +647,7 @@ class _Layout:
 
     def measure(self, text: str, size: float, style: str = "r") -> float:
         total = 0.0
-        for character in _plain(text):
+        for character in self._script_safe(_plain(text), style):
             font, display = self._styled(character, style)
             key = (font, display, size)
             if key not in self.width_cache:
@@ -608,7 +675,7 @@ class _Layout:
             if force_bold and style == "r":
                 style = "b"
             scale = 0.72 if style == "sup" else 1.0
-            for character in chunk.expandtabs(4):
+            for character in self._script_safe(chunk, style).expandtabs(4):
                 font, display = self._styled(character, style)
                 key = (font, display, size)
                 if key not in self.width_cache:
@@ -775,40 +842,86 @@ class _Layout:
         header = header + [""] * (columns - len(header))
         rows = [r + [""] * (columns - len(r)) for r in rows]
         minimum = size * 6
+        padding = 4.0
+        leading = size * 1.32
+
+        def tokens_of(cell: str, bold: bool = False):
+            """The cell split at spaces, so a machine-readable token can stay whole."""
+            tokens, current = [], []
+            for atom in (a for line in self._atoms(cell, size, 0, force_bold=bold) for a in line):
+                current.append(atom)
+                if atom[1].isspace():
+                    tokens.append(current)
+                    current = []
+            if current:
+                tokens.append(current)
+            return tokens
+
+        def token_width(token) -> float:
+            return sum(atom[2] for atom in token)
+
         natural = []
         for index in range(columns):
             head = self.measure(header[index], size, "b")
             body = max([self.measure(row[index], size) for row in rows] or [0.0])
             natural.append(max(head, body) + size * 2.6)
+        # An identifier, hash or path has no space to break at. Splitting it across two
+        # lines silently destroys the one thing the table exists to carry: a copyable
+        # exact value. Each column therefore gets a floor wide enough for its longest
+        # unbreakable token, and the remaining space is shared by the rest.
+        floors = []
+        for index in range(columns):
+            widest = 0.0
+            for cell, bold in [(header[index], True)] + [(row[index], False) for row in rows]:
+                for token in tokens_of(cell, bold):
+                    if any(atom[1].isspace() for atom in token):
+                        continue
+                    widest = max(widest, token_width(token))
+            floors.append(min(max(widest + padding * 2, minimum), self.usable * 0.55))
         widths = [0.0] * columns
-        order = sorted(range(columns), key=lambda index: natural[index])
-        remaining = self.usable
-        pending = list(order)
-        while pending:
-            index = pending[0]
-            share = remaining / len(pending)
-            if natural[index] <= share:
-                widths[index] = natural[index]
-                remaining -= natural[index]
-                pending.pop(0)
-            else:
-                for other in pending:
-                    widths[other] = remaining / len(pending)
-                break
-        leading = size * 1.32
-        padding = 4.0
+        if sum(floors) <= self.usable:
+            spare = [max(0.0, natural[i] - floors[i]) for i in range(columns)]
+            room = self.usable - sum(floors)
+            want = sum(spare) or 1.0
+            widths = [floors[i] + room * spare[i] / want for i in range(columns)]
+        else:
+            order = sorted(range(columns), key=lambda index: natural[index])
+            remaining = self.usable
+            pending = list(order)
+            while pending:
+                index = pending[0]
+                share = remaining / len(pending)
+                if natural[index] <= share:
+                    widths[index] = natural[index]
+                    remaining -= natural[index]
+                    pending.pop(0)
+                else:
+                    for other in pending:
+                        widths[other] = remaining / len(pending)
+                    break
 
         def wrap(cell: str, width: float, bold: bool = False):
-            out, current, used = [], [], 0.0
-            for atom in (a for line in self._atoms(cell, size, 0, force_bold=bold) for a in line):
-                if current and used + atom[2] > width - padding * 2:
-                    out.append(current)
+            limit = max(width - padding * 2, size * 2)
+            lines, current, used = [], [], 0.0
+            for token in tokens_of(cell, bold):
+                need = token_width(token)
+                if current and used + need > limit:
+                    lines.append(current)
                     current, used = [], 0.0
-                current.append(atom)
-                used += atom[2]
+                if not current and need > limit:
+                    # Only a token wider than the whole column is broken inside.
+                    for atom in token:
+                        if current and used + atom[2] > limit:
+                            lines.append(current)
+                            current, used = [], 0.0
+                        current.append(atom)
+                        used += atom[2]
+                    continue
+                current.extend(token)
+                used += need
             if current:
-                out.append(current)
-            return out or [[]]
+                lines.append(current)
+            return lines or [[]]
 
         def height_of(cells, rows_style):
             tallest = 1
@@ -934,7 +1047,14 @@ def _parse_inline(text: str) -> list[tuple[str, str]]:
         position = match.end()
     if position < len(text):
         runs.append((_strip_links(text[position:]), "r"))
-    return [(chunk, style) for chunk, style in runs if chunk]
+    out: list[tuple[str, str]] = []
+    for chunk, style in runs:
+        if not chunk:
+            continue
+        if style not in ("m", "math"):      # a code span and a formula stay literal
+            chunk = _smart_quotes(_unescape(chunk))
+        out.append((chunk, style))
+    return out
 
 
 def _strip_links(text: str) -> str:
@@ -951,6 +1071,12 @@ def _plain(text: str) -> str:
 # so the layout moves to a fresh page instead and keeps the figure large.
 FIGURE_HEIGHT_FRACTION = 0.62      # of the printable height, leaving room for caption
 FIGURE_MIN_HEIGHT = 0.30           # below this the caption crowd out the plot itself
+
+
+# In-text figure shortcut: `如 \fig{fig_heatmap_iptm} 所示` prints 图 3 and puts the plot
+# right after that sentence. Keyed by artifact id or by the file's stem, so a renumbered
+# or renamed figure never leaves a stale number in the prose.
+_FIGURE_REF = re.compile(r"\\fig\{([^{}]+)\}")
 
 
 def _place_figure(layout, canvas, path: Path, caption: str, artifact_id: str, number: int) -> None:
@@ -1096,7 +1222,57 @@ def render_report(markdown_text: str, output_path: Path, *, title: str,
     index = 0
     blank = False
     first_heading = True
-    placed: set[int] = set()
+
+    # Figures are numbered by where they first appear in the document, not by the order
+    # they were registered. Registration order is an artifact of the workflow; a reader
+    # flipping pages needs 图 1, 图 2, 图 3 down the page. A number is therefore reserved
+    # the first time the renderer meets that figure — either a placement marker or an
+    # in-text reference — and reused afterwards.
+    numbers: dict[str, int] = {}
+    placed_keys: set[str] = set()
+
+    def lookup(key: str):
+        wanted = key.strip()
+        for item in prepared:
+            if wanted in (item[2], item[0].stem, item[0].name):
+                return item
+        return None
+
+    def number_for(item) -> int:
+        if item[2] not in numbers:
+            numbers[item[2]] = len(numbers) + 1
+        return numbers[item[2]]
+
+    def place(item) -> None:
+        if item[2] in placed_keys:
+            return
+        number = number_for(item)
+        _place_figure(layout, canvas, item[0], item[1], item[2], number)
+        placed_keys.add(item[2])
+
+    def resolve_refs(text: str) -> tuple[str, list]:
+        """Turn \\fig{key} into 图 N and report figures that must follow this block.
+
+        The first in-text reference is the reference point: the plot belongs right after
+        the sentence that cites it, so the reader never turns a page to find it.
+        """
+        deferred: list = []
+
+        def replacement(match) -> str:
+            item = lookup(match.group(1))
+            if item is None:
+                return f"[未登记图 {match.group(1).strip()}]"
+            number = number_for(item)
+            if item[2] not in placed_keys:
+                deferred.append(item)
+            return f"图 {number}"
+
+        return _FIGURE_REF.sub(replacement, text), deferred
+
+    def flush(deferred: list) -> None:
+        for item in deferred:
+            place(item)
+
     while index < len(lines):
         line = lines[index]
         stripped = line.strip()
@@ -1120,29 +1296,29 @@ def render_report(markdown_text: str, output_path: Path, *, title: str,
             continue
         blank = False
         if stripped == "\\figures":
-            # Only what is still unplaced: an inline \figure earlier in the document has
-            # already been shown next to its claim, and repeating it here is noise.
-            for number, (path, caption, artifact_id) in enumerate(prepared, 1):
-                if number in placed:
-                    continue
-                _place_figure(layout, canvas, path, caption, artifact_id, number)
-                placed.add(number)
+            # Whatever the body never cited. It still lands here so no registered plot
+            # silently disappears; `validate` names the figures in this position. The
+            # block says what it is, because a page of plots with no framing reads like
+            # an appendix someone forgot to cite.
+            pending = [item for item in prepared if item[2] not in placed_keys]
+            if pending:
+                layout.need(60)
+                layout.rich("图表", size=13, after=4)
+                if placed_keys:
+                    layout.rich("下列图表未在正文中逐图引用，集中在此呈现。", size=9, after=8)
+                for item in pending:
+                    place(item)
             index += 1
             continue
         single = re.fullmatch(r"\\figure\{([^{}]+)\}", stripped)
         if single:
-            # A targeted figure lands next to the claim that needs it, which is the
-            # whole point: a reader should not have to hunt for the plot.
-            wanted = single.group(1).strip()
-            match = next(((n, item) for n, item in enumerate(prepared, 1)
-                          if item[2] == wanted or Path(item[0]).name == wanted), None)
-            if match is None:
-                layout.rich(f"[未找到图 {wanted}：请在 figures 中登记该工件]", size=9, after=6)
+            # An explicit placement lands next to the claim that needs it.
+            item = lookup(single.group(1))
+            if item is None:
+                layout.rich(f"[未找到图 {single.group(1).strip()}：请在 figures 中登记该工件]", size=9, after=6)
                 index += 1
                 continue
-            number, (path, caption, artifact_id) = match
-            _place_figure(layout, canvas, path, caption, artifact_id, number)
-            placed.add(number)
+            place(item)
             index += 1
             continue
         display_math = re.fullmatch(r"\$\$(.+?)\$\$", stripped) or re.fullmatch(r"\\\[(.+?)\\\]", stripped)
@@ -1210,6 +1386,7 @@ def render_report(markdown_text: str, output_path: Path, *, title: str,
                 quote.append(lines[index].strip().lstrip("> ").strip())
                 index += 1
             text = " ".join(part for part in quote if part)
+            text, deferred = resolve_refs(text)
             layout.need(14)
             top = layout.y
             layout.rich(text, size=9.4, indent=14, after=4)
@@ -1217,12 +1394,15 @@ def render_report(markdown_text: str, output_path: Path, *, title: str,
             canvas.setStrokeGray(0.72)
             canvas.line(layout.margin + 4, top - 2, layout.margin + 4, layout.y + 2)
             canvas.setStrokeGray(0)
+            flush(deferred)
             continue
         bullet = re.match(r"^(\s*)([-*+]|\d+[.)])\s+(.+)$", line)
         if bullet:
             depth = len(bullet.group(1)) // 2
             marker = "•" if bullet.group(2) in "-*+" else bullet.group(2)
-            layout.rich(f"{marker} {bullet.group(3)}", size=10, indent=12 + depth * 12, after=2)
+            body, deferred = resolve_refs(bullet.group(3))
+            layout.rich(f"{marker} {body}", size=10, indent=12 + depth * 12, after=2)
+            flush(deferred)
             index += 1
             continue
         paragraph = [stripped]
@@ -1235,14 +1415,18 @@ def render_report(markdown_text: str, output_path: Path, *, title: str,
                 break
             paragraph.append(nxt.strip())
             index += 1
-        layout.rich(" ".join(paragraph), size=10, after=6)
+        body, deferred = resolve_refs(" ".join(paragraph))
+        layout.rich(body, size=10, after=6)
+        flush(deferred)
 
-    remaining = [(n, item) for n, item in enumerate(prepared, 1) if n not in placed]
+    remaining = [item for item in prepared if item[2] not in placed_keys]
     if remaining:
         layout.need(60)
-        layout.rich("其余图表" if placed else "图表", size=13, after=6)
-        for number, (path, caption, artifact_id) in remaining:
-            _place_figure(layout, canvas, path, caption, artifact_id, number)
+        layout.rich("图表" if not placed_keys else "其余图表（正文未引用）", size=13, after=6)
+        if placed_keys:
+            layout.rich("下列图表在正文中没有引用位置，因此集中排在文末。", size=9, after=8)
+        for item in remaining:
+            place(item)
     pages = layout.finish()
     output_path.write_bytes(buffer.getvalue())
     return {"pdf_path": str(output_path), "pages": pages,

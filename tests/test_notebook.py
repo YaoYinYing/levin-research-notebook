@@ -951,5 +951,188 @@ class RegressionTests(unittest.TestCase):
         self.assertFalse(any('derived_from' in w for w in warnings))
 
 
+class RecordModelTests(unittest.TestCase):
+    """0.12.0: the record model a real campaign review asked for."""
+
+    def setUp(self):
+        self.workspace = Path(tempfile.mkdtemp(prefix='model-', dir=SCRATCH))
+        self.n = Notebook(self.workspace)
+        self.eid = self.n.init('task', 'agent-a', 'Model task', 'Exercise the record model')['experiment_id']
+        self.directory = Path(self.n._load(self.eid)['manifest_path']) if False else self.n._dir(self.eid)
+
+    def write(self, name='f.png', content=b'A'):
+        target = self.directory / 'data' / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        return target
+
+    def figure_run(self):
+        """A figure needs the run that produced it, so every figure test registers one.
+
+        The run declares the script as its input, which lets the figure inherit both from
+        `run_id` alone — the documented way to keep figure provenance honest.
+        """
+        script = self.directory / 'data' / 'plot.py'
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text('# plot\n', encoding='utf-8')
+        script_id = self.n.register_artifact(self.eid, dict(role='script', location=str(script),
+                                                            description='plotting script'))['artifact_id']
+        return self.n.register_run(self.eid, dict(backend='local', execution_status='success',
+                                                  command='python plot.py', parameters={'seed': 0},
+                                                  environment={'python': '3.11'},
+                                                  input_ids=[script_id]))['run_id']
+
+    def test_conditional_renders_in_its_own_section_without_evidence(self):
+        observation = self.n.checkpoint(self.eid, 'a', 'observation', '界面 pLDDT 中位数 62.4，两 decoy 一致')['checkpoint_id']
+        self.n.checkpoint(self.eid, 'a', 'conditional',
+                          '若该界面结论成立，则静电模型作废；若不成立，则入口柔性是唯一解释',
+                          title='两条互斥预测', refers_to=observation)
+        record = (self.directory / 'record.md').read_text(encoding='utf-8')
+        self.assertRegex(record, r'## \d+\. 条件推演与可证伪预测')
+        self.assertIn('若该界面结论成立', record)
+        self.assertIn('**结论解读**' if False else '依赖：', record)
+
+    def test_conditional_without_refers_to_is_rejected(self):
+        with self.assertRaises(Exception) as caught:
+            self.n.checkpoint(self.eid, 'a', 'conditional', '若该结论成立则模型需要重写，这属于条件推演')
+        self.assertIn('refers_to', str(caught.exception))
+
+    def test_a_note_can_now_be_corrected_but_cannot_replace_a_finding(self):
+        note = self.n.checkpoint(self.eid, 'a', 'note', '配色规范：colormap 用 viridis')['checkpoint_id']
+        # A note is the kind most likely to be written wrong, and it used to be the only
+        # kind that could never be corrected.
+        self.n.checkpoint(self.eid, 'a', 'note', '配色规范更正：改用 cividis', supersedes=note)
+        record = (self.directory / 'record.md').read_text(encoding='utf-8')
+        self.assertIn('~~配色规范：colormap 用 viridis~~', record)
+        self.assertIn('配色规范更正', record)
+        finding = self.n.checkpoint(self.eid, 'a', 'observation', '界面接触数与该指标无相关')['checkpoint_id']
+        with self.assertRaises(Exception) as caught:
+            self.n.checkpoint(self.eid, 'a', 'note', '补充说明', supersedes=finding)
+        self.assertIn('cannot replace', str(caught.exception))
+
+    def test_refers_to_a_missing_checkpoint_is_rejected(self):
+        with self.assertRaises(Exception) as caught:
+            self.n.checkpoint(self.eid, 'a', 'observation', '观察内容够长的一段文字',
+                              refers_to='checkpoint-' + '0' * 32)
+        self.assertIn('does not exist', str(caught.exception))
+
+    def test_refresh_counts_revisions_and_reports_metadata_changes(self):
+        run = self.figure_run()
+        target = self.write()
+        first = self.n.register_artifact(self.eid, {'role': 'figure', 'location': str(target),
+                                                    'description': 'ipTM matrix', 'run_id': run})
+        target.write_bytes(b'rendered again')
+        second = self.n.register_artifact(self.eid, {'role': 'figure', 'location': str(target),
+                                                     'description': 'ipTM matrix, wider colour bar',
+                                                     'run_id': run})
+        self.assertTrue(second['refreshed'])
+        self.assertEqual(second['revision'], 2)
+        self.assertEqual(second['changed_fields'], ['description'])
+        self.assertTrue(any('revision 1 -> 2' in w for w in second['warnings']))
+
+    def test_a_changed_figure_warns_while_changed_raw_evidence_errors(self):
+        run = self.figure_run()
+        figure = self.write('fig.png')
+        self.n.register_artifact(self.eid, {'role': 'figure', 'location': str(figure),
+                                            'description': 'plot', 'run_id': run})
+        figure.write_bytes(b'redrawn')
+        verdict = self.n.validate(self.eid)
+        self.assertTrue(any('checksum changed since revision 1' in w for w in verdict['warnings']))
+        self.assertFalse(any('checksum mismatch' in e for e in verdict['errors']))
+        raw = self.write('raw.csv')
+        self.n.register_artifact(self.eid, {'role': 'raw', 'location': str(raw), 'description': 'measured'})
+        raw.write_bytes(b'tampered')
+        self.assertTrue(any('checksum mismatch' in e for e in self.n.validate(self.eid)['errors']))
+
+    def test_retiring_an_artifact_clears_its_errors(self):
+        run = self.figure_run()
+        figure = self.write('stale.png')
+        kept = self.n.register_artifact(self.eid, {'role': 'figure', 'location': str(figure),
+                                                   'description': 'stale', 'run_id': run})
+        figure.unlink()
+        self.assertTrue(any('missing local file' in e for e in self.n.validate(self.eid)['errors']))
+        self.n.register_artifact(self.eid, {'role': 'figure', 'location': str(self.write('new.png')),
+                                            'description': 'replacement', 'run_id': run,
+                                            'supersedes': kept['artifact_id']})
+        self.assertFalse(any('missing local file' in e for e in self.n.validate(self.eid)['errors']))
+
+    def test_two_artifacts_may_not_share_an_alias(self):
+        self.n.register_artifact(self.eid, {'role': 'derived', 'location': str(self.write('a.csv')),
+                                            'description': 'one', 'reference_id': 'shared'})
+        with self.assertRaises(Exception) as caught:
+            self.n.register_artifact(self.eid, {'role': 'derived', 'location': str(self.write('b.csv')),
+                                                'description': 'two', 'reference_id': 'shared'})
+        self.assertIn('must be unique', str(caught.exception))
+
+    def test_prune_revisions_keeps_newest_and_human_edits(self):
+        for index in range(6):
+            self.n.checkpoint(self.eid, 'a', 'note', f'note number {index} recorded')
+        revisions = self.directory / 'revisions'
+        (revisions / ('human-record-' + 'a' * 32 + '.md')).write_text('hand edit', encoding='utf-8')
+        listing = self.n.prune_revisions(self.eid, keep=2, dry_run=True)
+        self.assertGreater(listing['removed_count'], 0)
+        self.assertEqual(len(list(revisions.glob('*.json'))), listing['kept'] + listing['removed_count'])
+        self.n.prune_revisions(self.eid, keep=2)
+        self.assertEqual(len(list(revisions.glob('*.json'))), 2)
+        self.assertTrue((revisions / ('human-record-' + 'a' * 32 + '.md')).is_file())
+
+    def test_a_cited_figure_is_placed_next_to_the_finding_that_cites_it(self):
+        run = self.figure_run()
+        figure = self.n.register_artifact(self.eid, {'role': 'figure', 'location': str(self.write('cited.png')),
+                                                     'description': '界面热图', 'run_id': run})['artifact_id']
+        self.n.checkpoint(self.eid, 'a', 'observation', '界面 pLDDT 中位数 62.4，两 decoy 一致',
+                          title='界面可信', evidence_ids=[figure])
+        record = (self.directory / 'record.md').read_text(encoding='utf-8')
+        marker = record.index(f'\\figure{{{figure}}}')
+        claim = record.index('界面 pLDDT 中位数 62.4')
+        # The plot follows the sentence that leans on it, before the next subsection.
+        self.assertLess(claim, marker)
+        self.assertLess(marker, record.index('### ', claim))
+
+    def test_uncited_figures_are_named_once_in_a_single_warning(self):
+        run = self.figure_run()
+        for index in range(3):
+            self.n.register_artifact(self.eid, {'role': 'figure', 'location': str(self.write(f'f{index}.png')),
+                                                'description': f'图 {index}', 'run_id': run})
+        warnings = [w for w in self.n.validate(self.eid)['warnings'] if '未被正文' in w]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('3 个图', warnings[0])
+        self.assertIn('\\fig{', warnings[0])
+
+    def test_materials_list_only_raw_and_input_evidence(self):
+        run = self.figure_run()
+        for index in range(4):
+            self.n.register_artifact(self.eid, {'role': 'input', 'location': str(self.write(f'in{index}.csv')),
+                                                'description': f'输入 {index}', 'source_origin': 'local_original'})
+        self.n.register_artifact(self.eid, {'role': 'derived', 'location': str(self.write('out.csv')),
+                                            'description': '派生结果'})
+        self.n.register_artifact(self.eid, {'role': 'figure', 'location': str(self.write('p.png')),
+                                            'description': '图', 'run_id': run})
+        record = (self.directory / 'record.md').read_text(encoding='utf-8')
+        section = record.split('## 4. ')[1].split('## 5. ')[0]
+        self.assertIn('4 项，逐项见下', section)
+        # A derived table is a result, not a material; it belongs to the results and the
+        # appendix, not to the list of what the work consumed.
+        self.assertNotIn('out.csv', section)
+        self.assertNotIn('p.png', section)
+        self.assertIn('in0.csv', section)
+
+    def test_run_parameters_are_pointed_at_instead_of_pasted_into_a_cell(self):
+        self.n.register_run(self.eid, dict(backend='local', execution_status='success', command='python a.py',
+                                          parameters={'key_%d' % index: 'x' * 40 for index in range(6)},
+                                          environment={'python': '3.11'}))
+        record = (self.directory / 'record.md').read_text(encoding='utf-8')
+        section = record.split('## 4. ')[1].split('## 5. ')[0]
+        self.assertIn('逐条见附录「执行溯源」', section)
+        self.assertNotIn('key_5', section)
+        self.assertIn('key_5', record.split('## 工件与溯源')[1])
+
+    def test_init_resumes_by_explicit_id_even_when_the_wording_changed(self):
+        again = self.n.init('task', 'agent-b', 'Rewritten title by the parent session',
+                            'The parent cannot reproduce the subagent wording', experiment_id=self.eid)
+        self.assertEqual(again['experiment_id'], self.eid)
+        self.assertTrue(again['resumed'])
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

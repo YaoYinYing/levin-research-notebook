@@ -42,6 +42,8 @@ def invoke(operation, arguments):
             a['eid']=a.pop('experiment_id'); return n.finalize(**a)
         if operation=='prune_reports':
             return n.prune_reports(a['experiment_id'], a.get('keep','last-success'), a.get('dry_run',False))
+        if operation=='prune_revisions':
+            return n.prune_revisions(a['experiment_id'], a.get('keep',20), a.get('dry_run',False))
         if operation=='index':
             rows,errors=n.index(**a); return {'ok':True,'experiments':rows,'errors':errors,'count':len(rows)}
         raise NotebookError('Unknown operation')
@@ -59,3 +61,4 @@ def research_record_validate(context,arguments): return invoke('validate',argume
 def research_record_finalize(context,arguments): return invoke('finalize',arguments)
 def research_record_index(context,arguments): return invoke('index',arguments)
 def research_record_prune_reports(context,arguments): return invoke('prune_reports',arguments)
+def research_record_prune_revisions(context,arguments): return invoke('prune_revisions',arguments)

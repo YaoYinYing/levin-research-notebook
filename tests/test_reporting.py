@@ -9,6 +9,7 @@ import copy
 import importlib.util
 import os
 from pathlib import Path
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -159,6 +160,95 @@ class ReportingTests(unittest.TestCase):
         result = self.render("before\x00after\u202eend")
         self.assertIn("U+0000", result["unsupported_codepoints"])
         self.assertIn("U+202E", result["unsupported_codepoints"])
+
+    def test_html_entities_render_as_characters(self):
+        # A record is Markdown, where "&lt;160" is "<160". Printing the entity made a
+        # delivered PDF look corrupt, so the renderer must decode it.
+        self.render("残基 &lt;160 且 &lt;H&gt; = +1.30，条件 a &gt; b，5 &amp; 6。")
+        text = self.reader().pages[0].extract_text()
+        for entity in ("&lt;", "&gt;", "&amp;"):
+            self.assertNotIn(entity, text)
+        flat = text.replace("\n", "")
+        for wanted in ("<160", "<H> = +1.30", "a > b", "5 & 6"):
+            self.assertIn(wanted, flat)
+
+    def test_straight_quotes_become_chinese_quotes_but_never_inside_code(self):
+        self.render('# 引号\n\n他说"可能稳定构象/通道"，又说"压在催化腔上"。\n\n'
+                    '| 参数 | 值 |\n| --- | --- |\n| `{"batch_size": 10}` | 固定 |\n\n'
+                    '```\n{"frames": 300, "note": "keep me"}\n```')
+        flat = "\n".join(p.extract_text() or "" for p in self.reader().pages).replace("\n", "")
+        self.assertIn("“可能稳定构象/通道”", flat)
+        self.assertIn("“压在催化腔上”", flat)
+        # Machine-readable content keeps its literal quotes: rewriting them would
+        # silently change a parameter block a reader is meant to copy.
+        self.assertIn('"batch_size": 10', flat)
+        self.assertIn('"frames": 300', flat)
+        self.assertNotIn("“batch_size”", flat)
+
+    def test_figure_citation_places_the_plot_at_the_sentence_that_cites_it(self):
+        # The reference point, not the registration order, decides both the number and the
+        # position: a plot cited first must be 图 1 and must sit under that sentence.
+        from PIL import Image
+        paths = []
+        for name, colour in (("registered-first.png", (200, 80, 80)),
+                             ("registered-second.png", (80, 120, 200))):
+            target = self.root / name
+            Image.new("RGB", (600, 300), colour).save(target)
+            paths.append(target)
+        figures = [dict(path=str(paths[0]), caption="注册在先的图", artifact_id="fig-first"),
+                   dict(path=str(paths[1]), caption="注册在后的图", artifact_id="fig-second")]
+        self.render("# 引用\n\n先引用后注册的那张：如 \\fig{fig-second} 所示。\n\n"
+                    "再引用另一张：见 \\fig{fig-first}。\n\n"
+                    "重复引用一次：\\fig{fig-second} 不再插入。", figures=figures)
+        flat = "".join(p.extract_text() or "" for p in self.reader().pages).replace("\n", "")
+        self.assertIn("如 图 1 所示", flat)
+        self.assertIn("见 图 2", flat)
+        self.assertNotIn("图 3", flat)
+        # The caption of 图 1 is the figure registered second, in place after its sentence.
+        first = flat.index("图 1.")
+        self.assertLess(flat.index("先引用后注册的那张"), first)
+        self.assertLess(first, flat.index("再引用另一张"))
+
+    def test_a_figure_no_sentence_cites_still_renders_in_a_named_plate(self):
+        from PIL import Image
+        target = self.root / "uncited.png"
+        Image.new("RGB", (600, 300), (90, 140, 90)).save(target)
+        self.render("# 无引用\n\n正文没有指向任何图。\n\n\\figures",
+                    figures=[dict(path=str(target), caption="无人引用的图", artifact_id="fig-orphan")])
+        flat = "".join(p.extract_text() or "" for p in self.reader().pages).replace("\n", "")
+        self.assertIn("图表", flat)
+        self.assertIn("图 1.", flat)
+
+    def test_an_unknown_figure_reference_is_visible(self):
+        self.render("正文 \\fig{does-not-exist}。")
+        flat = self.reader().pages[0].extract_text().replace("\n", "")
+        self.assertIn("未登记图", flat)
+        self.assertIn("does-not-exist", flat)
+
+    def test_a_script_run_is_drawn_one_way_or_the_other(self):
+        # Per-character resolution produced "κ^-¹": the missing minus became "^-" while
+        # the Latin-1 superscript one stayed a real glyph.
+        result = self.render("介电 κ⁻¹ = 9.5 Å，速率 m⁻¹，面积 5278 Å³，R² = 0.98。")
+        flat = self.reader().pages[0].extract_text().replace("\n", "")
+        self.assertNotIn("κ^-¹", flat)
+        self.assertIn("κ^-1", flat)
+        self.assertIn("m^-1", flat)
+        # A run the faces can actually draw keeps its real superscript glyphs.
+        self.assertIn("R²", flat)
+        self.assertIn("Å³", flat)
+        self.assertIn("U+207B", result["transliterated_codepoints"])
+
+    def test_machine_readable_tokens_are_never_split_across_lines(self):
+        # An identifier split in two cannot be copied, which defeats the table.
+        identifiers = [f"artifact-{index:032x}" for index in range(1, 5)]
+        rows = "\n".join(f"| `{value}` | raw | local | local_original / 文献 src-nature2025 |"
+                         for value in identifiers)
+        self.render(f"# 工件\n\n| ID | 角色 | 可用性 | 来源 |\n| --- | --- | --- | --- |\n{rows}")
+        raw = "\n".join(p.extract_text() or "" for p in self.reader().pages)
+        for value in identifiers:
+            self.assertIn(value, raw.replace("\n", ""))
+        self.assertFalse(re.findall(r"artifact-[0-9a-f]{8,}\s+[0-9a-f]{4,}", raw),
+                         "an identifier was split across two lines")
 
     def test_png_jpeg_figures_and_captions(self):
         figures = []
