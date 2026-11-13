@@ -61,3 +61,12 @@ matches the code that produced the outputs.
 Start with `record.md`, not the manifest. It is generated from the manifest and shows the same
 sections the report will. Then `research_record_validate` for current structural state, and
 `research_record_index(include_summary: true)` to see counts per record without opening JSON.
+
+## Before the first call
+
+`workspace_dir` must already exist as a directory — the tool will not create it, and a missing
+path is rejected with `invalid_workspace_dir`. One line first:
+
+```bash
+mkdir -p <workspace_dir>
+```

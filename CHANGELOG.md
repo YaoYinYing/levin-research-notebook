@@ -34,6 +34,40 @@ recorded under `0.11.9`, which is the release that shipped it.
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-13
+
+An independent acceptance round on 0.13.0 passed all four scenarios (pause window in 记录范围,
+exclude-keeps-in-manifest, dependency-aware refusals, full lifecycle) and returned seven friction items.
+Five were real; this release fixes them.
+
+### Added
+- Records:
+  - a run may declare `script_id`, the script artifact that executed it. Before this the field did not
+    exist, so a figure could never inherit a script from `run_id` alone — the inheritance path the
+    skill advertised was unreachable, and the error text told the caller to do something impossible.
+
+### Fixed
+- Records:
+  - `research_record_exclude` accepts `reference_id` aliases, as every other id field does; the skill
+    says "the reference_id is the id you use", and this was the one place it was not true.
+  - `restore` no longer erases why the entry was set aside: `exclusion_reason` survives, with
+    `restored_at` and `restored_reason` recording the restoration.
+  - `index` searches recorded quantities. A record that reports `radius_of_gyration` could not be found
+    by that name, which is the number its conclusion rests on.
+- Report:
+  - an artifact alias prints as 文献 only when it names a bibliography entry; a handle for a local file
+    now prints 别名, because calling it literature misleads a reader.
+
+### Changed
+- Skill:
+  - states that `workspace_dir` must exist before `init` (`mkdir -p`, else `invalid_workspace_dir`).
+  - documents both working figure-provenance shapes now that a run can carry `script_id`.
+  - states that a rejected `finalize` still writes a blocked snapshot, so `prune_reports` is worth
+    calling after a failed attempt.
+
+### Tests
+- 193 cases (189 + run script inheritance, alias exclusion, restore audit trail, quantity search).
+
 ## [0.13.0] - 2026-11-13
 
 Keeping the recorder out of the record. A session that debugged this plugin while using it wrote the

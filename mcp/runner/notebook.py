@@ -159,15 +159,18 @@ SCHEMA = {
  'checkpoints':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['id','created_at','agent_id','kind','text','evidence_ids'], 'properties':{'id':{'type':'string'},'created_at':{'type':'string'},'agent_id':{'type':'string'},'kind':{'enum':['method','observation','failure','conclusion','conditional','resume','note']},'text':{'type':'string','minLength':1},'evidence_ids':{'type':'array','items':{'type':'string'}},'title':{'type':'string'},'replica':{'type':['integer','null']},'retry':{'type':['integer','null']},'when_note':{'type':'string'},'refers_to':{'type':['string','null']},'supersedes':{'type':['string','null']},
    # Set aside rather than deleted: an entry that turns out to be tooling chatter
    # stays in the manifest and the revisions, but the report does not render it.
-   'excluded':{'type':'boolean'},'exclusion_reason':{'type':'string'},'excluded_at':{'type':'string'}}}},
+   'excluded':{'type':'boolean'},'exclusion_reason':{'type':'string'},'excluded_at':{'type':'string'},
+   'restored_at':{'type':'string'},'restored_reason':{'type':'string'}}}},
  'artifacts':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['id','created_at','role','location','external','description','input_ids','script_id','run_id','sha256','checksum_origin','size_bytes','availability','conditions'], 'properties':{'id':{'type':'string'},'created_at':{'type':'string'},'role':{'enum':['raw','derived','script','figure','log','input','table','deliverable']},'location':{'type':'string','minLength':1},'external':{'type':'boolean'},'description':{'type':'string'},'input_ids':{'type':'array','items':{'type':'string'}},'script_id':{'type':['string','null']},'run_id':{'type':['string','null']},'sha256':{'type':['string','null'],'pattern':'^[a-f0-9]{64}$'},'source_origin':{'enum':['local_original','remote_copy','unspecified']},'remote_host':{'type':['string','null']},'remote_path':{'type':['string','null']},'remote_copy_permission':{'type':['string','null']},'reference_id':{'type':['string','null']},'checksum_origin':{'enum':['computed','supplied_unverified','not_computed']},'size_bytes':{'type':['integer','null'],'minimum':0},'availability':{'enum':['local','missing','external_unverified']},'conditions':{'type':'object'},
    # A regenerated figure is a normal scientific event, not tampering, so an artifact
    # carries how many times its bytes were re-registered and whether it is retired.
    'revision':{'type':'integer','minimum':1},'retired':{'type':'boolean'},
    'supersedes':{'type':['string','null']},'superseded_by':{'type':['string','null']},
-   'excluded':{'type':'boolean'},'exclusion_reason':{'type':'string'},'excluded_at':{'type':'string'}}}},
- 'runs':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['id','created_at','backend','external_id','execution_status','command','parameters','environment','input_ids','output_ids','failure'], 'properties':{'id':{'type':'string'},'created_at':{'type':'string'},'backend':{'enum':['local','levin','slurm','external']},'host':{'type':'string','minLength':1},'external_id':{'type':'string'},'reference_id':{'type':['string','null']},'execution_status':{'enum':['wip','success','failed']},'command':{'type':'string'},'parameters':{'type':'object'},'environment':{'type':'object'},'input_ids':{'type':'array','items':{'type':'string'}},'output_ids':{'type':'array','items':{'type':'string'}},'failure':{'type':'string'},
-   'excluded':{'type':'boolean'},'exclusion_reason':{'type':'string'},'excluded_at':{'type':'string'}}}},
+   'excluded':{'type':'boolean'},'exclusion_reason':{'type':'string'},'excluded_at':{'type':'string'},
+   'restored_at':{'type':'string'},'restored_reason':{'type':'string'}}}},
+ 'runs':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['id','created_at','backend','external_id','execution_status','command','parameters','environment','input_ids','output_ids','failure'], 'properties':{'id':{'type':'string'},'created_at':{'type':'string'},'backend':{'enum':['local','levin','slurm','external']},'host':{'type':'string','minLength':1},'external_id':{'type':'string'},'reference_id':{'type':['string','null']},'execution_status':{'enum':['wip','success','failed']},'command':{'type':'string'},'parameters':{'type':'object'},'environment':{'type':'object'},'input_ids':{'type':'array','items':{'type':'string'}},'output_ids':{'type':'array','items':{'type':'string'}},'script_id':{'type':['string','null']},'failure':{'type':'string'},
+   'excluded':{'type':'boolean'},'exclusion_reason':{'type':'string'},'excluded_at':{'type':'string'},
+   'restored_at':{'type':'string'},'restored_reason':{'type':'string'}}}},
  'suspensions':{'type':'array','maxItems':200,'items':{'type':'object','additionalProperties':False,'required':['id','opened_at','agent_id','reason'],
    'properties':{'id':{'type':'string'},'opened_at':{'type':'string'},'closed_at':{'type':['string','null']},'agent_id':{'type':'string'},'reason':{'type':'string','minLength':1}}}},
  'visualization':{'type':['object','null'],'additionalProperties':False,'required':['beneficial','reason','figure_ids','reviewed_by'], 'properties':{'beneficial':{'type':'boolean'},'reason':{'type':'string','minLength':1},'figure_ids':{'type':'array','items':{'type':'string'}},'reviewed_by':{'type':'string','minLength':1}}},
@@ -494,23 +497,29 @@ class Notebook:
             if artifact['role']=='figure':
                 run=_resolve_run(artifact.get('run_id') or '', m['runs']) if artifact.get('run_id') else None
                 if run is None:
-                    raise NotebookError('Figures require the run that produced them: pass run_id (or its reference_id) '
-                                        'and input_ids plus script_id, or just run_id when that run already declares '
-                                        'them. Register the run first.')
+                    raise NotebookError('Figures require the run that produced them: pass run_id (or its reference_id), '
+                                        'and then either input_ids plus script_id on the figure, or a run that already '
+                                        'declares both (register the run first).')
                 # Inherit what the run already declares instead of demanding it twice.
                 missing_inputs=not artifact.get('input_ids')
                 missing_script=not artifact.get('script_id')
                 if missing_inputs and run.get('input_ids'):
                     artifact['input_ids']=list(run['input_ids'])
                 if missing_script:
-                    script=_resolve_artifact(str(artifact.get('script_id') or ''),known)
+                    script=None
+                    if run.get('script_id') and run['script_id'] in known:
+                        script=known[run['script_id']]
                     if script is None:
                         script=next((known[r] for r in run.get('input_ids',[]) if r in known and known[r]['role']=='script'),None)
                     if script is not None: artifact['script_id']=script['id']
                 if not artifact.get('input_ids') or not artifact.get('script_id'):
-                    raise NotebookError('Figures require input_ids and script_id (or a run that declares them): '
-                                        f'run {run["id"]} declares {len(run.get("input_ids",[]))} input(s). '
-                                        'Register the script artifact, then register or update the run with its inputs.')
+                    raise NotebookError(
+                        f'Figures require input_ids and script_id, or a run that declares both: run {run["id"]} '
+                        f'declares {len(run.get("input_ids",[]))} input(s) and '
+                        f'{"a script" if run.get("script_id") else "no script"}. '
+                        'Two working options: (1) pass input_ids plus script_id on the figure itself, or '
+                        '(2) register the script artifact, then update the run with script_id and its inputs, '
+                        'and register the figure with run_id alone.')
             # Store canonical ids, never the alias the caller happened to pass: accepting an
             # alias at registration but persisting it verbatim produced records that were
             # valid on write and invalid at validate.
@@ -595,7 +604,8 @@ class Notebook:
         return self.mutate(eid,request_id,dict(op='artifact',artifact=artifact),change)
 
     def register_run(self,eid,run,request_id=None):
-        allowed={'id','backend','host','external_id','execution_status','command','parameters','environment','input_ids','output_ids','failure','reference_id'}
+        allowed={'id','backend','host','external_id','execution_status','command','parameters','environment',
+                 'input_ids','output_ids','failure','reference_id','script_id'}
         if set(run)-allowed: raise NotebookError('Unknown run metadata fields')
         def change(m):
             window=_active_suspension(m)
@@ -613,6 +623,16 @@ class Notebook:
                                             f'you registered it with. Known: {_sample_ids(known)}')
                     resolved_io[field].append(target['id'])
             text(run.get('command',''),'command')
+            # A run is executed by a command; the script artifact is where that command lives.
+            # Without this field the documented figure inheritance had no source to inherit from.
+            run_script=None
+            if run.get('script_id'):
+                target=_resolve_artifact(str(run['script_id']),known)
+                if target is None or target['role']!='script':
+                    scripts={k:v for k,v in known.items() if v['role']=='script'}
+                    raise NotebookError(f'Unknown script for run {run["script_id"]!r}; it must name a registered '
+                                        f'artifact with role=script. Known scripts: {_sample_ids(scripts)}')
+                run_script=target['id']
             host=run.get('host') or (socket.gethostname() if run['backend'] in ('local','levin') else None)
             if not host: raise NotebookError('backend='+run['backend']+' runs must record host, the machine the computation actually ran on (e.g. hpc-node7)')
             text(host,'host',limit=200)
@@ -629,7 +649,8 @@ class Notebook:
             if ref_id is not None: text(ref_id,'reference_id',limit=60)
             # omit means keep, exactly as for artifacts
             ref_id=ref_id if ref_id is not None else (existing.get('reference_id') if existing else None)
-            r=dict(id=existing['id'] if existing else uid('run'),created_at=existing['created_at'] if existing else now(),backend=run['backend'],host=host,reference_id=ref_id,external_id=run.get('external_id',''),execution_status=run['execution_status'],command=run['command'],parameters=run.get('parameters',{}),environment=run['environment'],input_ids=resolved_io['input_ids'],output_ids=resolved_io['output_ids'],failure=run.get('failure',''))
+            r=dict(id=existing['id'] if existing else uid('run'),created_at=existing['created_at'] if existing else now(),backend=run['backend'],host=host,reference_id=ref_id,external_id=run.get('external_id',''),execution_status=run['execution_status'],command=run['command'],parameters=run.get('parameters',{}),environment=run['environment'],input_ids=resolved_io['input_ids'],output_ids=resolved_io['output_ids'],failure=run.get('failure',''),
+                     script_id=run_script if run.get('script_id') else (existing.get('script_id') if existing else None))
             if existing: m['runs'][m['runs'].index(existing)]=r
             else: m['runs'].append(r)
             return {'run_id':r['id']}
@@ -1094,9 +1115,15 @@ class Notebook:
             raise NotebookError('an exclusion needs a reason (at least 8 characters) saying why the '
                                 'entry is out of scope; an unexplained gap is worse than clutter')
         def change(m):
+            # Aliases resolve everywhere else, so they must resolve here too: the skill tells
+            # the caller "the reference_id is the id you use".
             checkpoints={c['id']:c for c in m['checkpoints']}
             artifacts={a['id']:a for a in m['artifacts']}
             runs={r['id']:r for r in m['runs']}
+            for entry in list(checkpoints.values())+list(artifacts.values())+list(runs.values()):
+                alias=entry.get('reference_id')
+                if alias:
+                    checkpoints.setdefault(alias, entry); artifacts.setdefault(alias, entry); runs.setdefault(alias, entry)
             changed=[]; unknown=[]
             live_conclusions=[c for c in m['checkpoints']
                               if c['kind']=='conclusion' and not c.get('excluded')]
@@ -1112,8 +1139,14 @@ class Notebook:
                         raise NotebookError(f'{target} is cited by conclusion {holders[0]}; correct that '
                                             'conclusion (or exclude it too) before setting its evidence aside')
                 entry['excluded']=not restore
-                entry['exclusion_reason']=reason.strip() if not restore else ''
-                entry['excluded_at']=now() if not restore else ''
+                if restore:
+                    # Keep what it was set aside for and record the restoration: a reader who
+                    # sees a live entry should still be able to learn it was once excluded.
+                    entry['restored_at']=now()
+                    entry['restored_reason']=reason.strip()
+                else:
+                    entry['exclusion_reason']=reason.strip()
+                    entry['excluded_at']=now()
                 changed.append(target)
             if unknown:
                 raise NotebookError('Unknown ids to exclude: '+', '.join(unknown[:4])+
@@ -1132,6 +1165,11 @@ class Notebook:
                 parts=[m['title'],m['objective'],m['hypothesis'],m['interpretation'],m['limitations'],m['experiment_id'],m['task_id']]
                 parts+= [c['text'] for c in m['checkpoints']]
                 for a in m['artifacts']: parts+=[a['location'],a['description'],a['id']]
+                # A recorded quantity is the number the conclusion rests on; leaving it out
+                # of the haystack made 'radius_of_gyration' unfindable in the record that
+                # reports it.
+                for q in (m.get('quantities') or []):
+                    parts += [str(q.get('name') or ''), str(q.get('note') or ''), str(q.get('unit') or '')]
                 for r in m['runs']: parts+=[r['command'],r['failure'],r['external_id'],r['id'],json.dumps(r['parameters'],ensure_ascii=False),json.dumps(r['environment'],ensure_ascii=False)]
                 haystack=' '.join(parts).lower()[:200000]
                 if all(term in haystack for term in query.lower().split()[:8]):
@@ -1734,11 +1772,16 @@ class Notebook:
         # Long machine strings (paths, digests) are printed one per line rather than in
         # a grid cell: a 64-character digest inside a column becomes unreadable
         # fragments, and the value must stay copyable.
+        ref_ids={str(r.get('id')) for r in (m.get('references') or []) if r.get('id')}
         lines += ['\\pagebreak','','## 工件与溯源','','机器可读证据。路径与摘要为精确值；外部引用从未被访问。','',
                   '| ID | 角色 | 可用性 | 来源 |','| --- | --- | --- | --- |']
         for a in m['artifacts']:
             note=a.get('source_origin','unspecified')+(' @ '+a['remote_host'] if a.get('remote_host') else '')
-            if a.get('reference_id'): note+=f" / 文献 {a['reference_id']}"
+            if a.get('reference_id'):
+                # An alias naming a bibliography entry is 文献; any other alias is just the
+                # caller's handle for a local file, and calling that 文献 misleads a reader.
+                label='文献' if a['reference_id'] in ref_ids else '别名'
+                note+=f" / {label} {a['reference_id']}"
             if a.get('retired'): note+=' / 已作废'
             if (a.get('revision') or 1)>1: note+=f" / rev {a['revision']}"
             lines.append(f"| `{a['id']}` | {a['role']} | {Notebook._cell(a['availability'])} | {Notebook._cell(note)} |")

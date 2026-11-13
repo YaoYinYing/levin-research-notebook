@@ -1,7 +1,7 @@
 from levin_plugin_sdk import Plugin, PythonRuntime, RuntimeCommand
 
 plugin = Plugin(
-    id='levin-research-notebook',version='0.13.0',display_name='Levin Research Notebook',
+    id='levin-research-notebook',version='0.13.1',display_name='Levin Research Notebook',
     description='Filesystem research evidence, experiment provenance and editable scientific reports.',
     server_name='runner',runtime=PythonRuntime(id='runner',python='3.11',project='./mcp/runner',cache_key='runner',
         packages=('jsonschema==4.23.0','filelock==3.16.1','reportlab==4.2.5','matplotlib==3.9.4','bibtexparser==2.1.0'),
@@ -23,7 +23,7 @@ eid={'experiment_id':{'type':'string','pattern':'^exp-[0-9a-f]{32}$'},'request_i
 agent={'type':'string','pattern':'^[A-Za-z0-9][A-Za-z0-9_.-]{0,100}$'}
 art=obj({'role':{'enum':['raw','input','derived','script','figure','log','table','deliverable'],'description':'deliverable is a finished artefact meant for a human reader (briefing, figure set, document); derived is an intermediate computation result.'},'location':string(4096),'description':string(), 'input_ids':ids(),'script_id':string(120),'run_id':string(120),'sha256':{'type':'string','pattern':'^[a-f0-9]{64}$'},'source_origin':{'type':'string','enum':['local_original','remote_copy','unspecified']},'remote_host':{'type':'string','minLength':1,'maxLength':512},'remote_path':{'type':'string','minLength':1,'maxLength':512},'remote_copy_permission':{'type':'string','minLength':1,'maxLength':2000},'reference_id':{'type':'string','maxLength':60},'retired':{'type':'boolean','description':'Mark this artifact as history: validate then skips its file-existence and checksum checks, which is how a superseded figure stops producing a permanent error.'},'supersedes':{'type':'string','maxLength':120,'description':'Artifact id or reference_id this one replaces; the replaced entry is marked retired and points here.'},'conditions':{'type':'object'}},('role','location','description'))
 run=obj({'id':string(120),'backend':{'enum':['local','levin','slurm','external']},'host':{'type':'string','minLength':1,'maxLength':200},'reference_id':{'type':'string','maxLength':60},'external_id':{'type':'string','maxLength':300},'execution_status':state,'command':string(),'parameters':{'type':'object'},'environment':{'type':'object','minProperties':1},'input_ids':ids(),'output_ids':ids(),'failure':{'type':'string','maxLength':20000}
-},('backend','execution_status','command','environment'))
+,'script_id':string(120)},('backend','execution_status','command','environment'))
 visual=obj({'beneficial':{'type':'boolean'},'reason':string(),'figure_ids':ids(),'reviewed_by':string(100)},('beneficial','reason','figure_ids','reviewed_by'))
 fake='exp-'+'0'*32
 DEFS=[

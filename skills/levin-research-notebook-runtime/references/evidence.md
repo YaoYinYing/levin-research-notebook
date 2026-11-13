@@ -116,6 +116,20 @@ Never overwrite originals, upload private data, silently fetch an external refer
 or commit large datasets. Completion implies no retention policy. Keep secrets out of commands,
 metadata and URLs — URLs carrying userinfo or query strings are rejected outright.
 
+## Figure provenance: the two working shapes
+
+A figure must end up with `input_ids` and `script_id`. A run may now declare `script_id` itself, so both
+shapes work:
+
+| Shape | Calls |
+|---|---|
+| figure carries it | `register_artifact(role="figure", run_id=<run>, input_ids=[...], script_id=<script>)` |
+| run carries it | register the script, then `register_run(script_id=<script>, input_ids=[...])`, then `register_artifact(role="figure", run_id=<run>)` |
+
+The second shape is the tidier one: the run records what executed and what it read, and every figure it
+produced inherits that without repeating it. Before this existed the run had no `script_id` field, so
+the inheritance path the skill advertised could not be completed at all.
+
 ## Keeping the recorder out of the record
 
 Work that is not the experiment must not become part of it. Two mechanisms exist, and they are

@@ -1076,6 +1076,54 @@ class RecordModelTests(unittest.TestCase):
         self.assertEqual(len(list(revisions.glob('*.json'))), 2)
         self.assertTrue((revisions / ('human-record-' + 'a' * 32 + '.md')).is_file())
 
+    def test_a_run_may_declare_its_script_and_a_figure_inherits_it(self):
+        # The documented inheritance path was unreachable: a run had no script_id field, so
+        # a figure could never inherit one from run_id alone.
+        script = self.n.register_artifact(self.eid, {'role': 'script', 'location': str(self.write('plot.py')),
+                                                     'description': 'plotting',
+                                                     'reference_id': 'script-alias'})['artifact_id']
+        data = self.n.register_artifact(self.eid, {'role': 'input', 'location': str(self.write('in.csv')),
+                                                   'description': 'input', 'source_origin': 'local_original'})['artifact_id']
+        run = self.n.register_run(self.eid, dict(backend='local', execution_status='success',
+                                                 command='python plot.py', environment={'python': '3.11'},
+                                                 script_id='script-alias', input_ids=[data]))
+        manifest = self.n._load(self.eid)
+        stored = next(r for r in manifest['runs'] if r['id'] == run['run_id'])
+        self.assertEqual(stored['script_id'], script)
+        figure = self.n.register_artifact(self.eid, {'role': 'figure', 'location': str(self.write('f.png')),
+                                                    'description': 'plot', 'run_id': run['run_id']})
+        fresh = self.n._load(self.eid)
+        entry = next(a for a in fresh['artifacts'] if a['id'] == figure['artifact_id'])
+        self.assertEqual(entry['script_id'], script)
+        self.assertEqual(entry['input_ids'], [data])
+
+    def test_exclude_accepts_an_alias_like_every_other_id_field(self):
+        ghost = self.n.register_artifact(self.eid, {'role': 'derived', 'location': str(self.write('probe.csv')),
+                                                    'description': 'probe output', 'reference_id': 'derived-b'})
+        self.n.exclude(self.eid, 'a', ['derived-b'], 'probe output from debugging the recorder')
+        manifest = self.n._load(self.eid)
+        entry = next(a for a in manifest['artifacts'] if a['id'] == ghost['artifact_id'])
+        self.assertTrue(entry['excluded'])
+
+    def test_restoring_keeps_the_reason_it_was_set_aside(self):
+        junk = self.n.checkpoint(self.eid, 'a', 'note', 'plugin returned 500, retried twice')['checkpoint_id']
+        self.n.exclude(self.eid, 'a', [junk], 'recorder debugging, not the experiment')
+        self.n.exclude(self.eid, 'a', [junk], 'scope review says it belongs', restore=True)
+        entry = next(c for c in self.n._load(self.eid)['checkpoints'] if c['id'] == junk)
+        self.assertFalse(entry['excluded'])
+        self.assertEqual(entry['exclusion_reason'], 'recorder debugging, not the experiment')
+        self.assertEqual(entry['restored_reason'], 'scope review says it belongs')
+        self.assertTrue(entry['restored_at'])
+
+    def test_index_finds_a_record_by_the_quantity_it_reports(self):
+        self.n.checkpoint(self.eid, 'a', 'method', 'Measured the assembly')
+        self.n.finalize(self.eid, 'success', 'Inconclusive', 'Narrow', 
+                        {'beneficial': False, 'reason': 'none', 'figure_ids': [], 'reviewed_by': 'a'},
+                        quantities=[{'name': 'radius_of_gyration', 'value': 18, 'unit': 'Å'}],
+                        request_id='q1')
+        rows, _errors = self.n.index('radius_of_gyration')
+        self.assertEqual([row['experiment_id'] for row in rows], [self.eid])
+
     def test_a_pause_stops_the_recorder_recording_itself(self):
         # Debugging the notebook tooling inside the same session used to write the debugging
         # process into the experiment, which then documented the recorder, not the science.

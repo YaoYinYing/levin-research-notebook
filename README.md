@@ -1,6 +1,6 @@
 # Levin Research Notebook
 
-A personal Levin plugin (v0.13.0) that keeps scientific evidence alive past the chat window. It is a
+A personal Levin plugin (v0.13.1) that keeps scientific evidence alive past the chat window. It is a
 **record-lifecycle** plugin over a real filesystem workspace: it records what was done, what produced
 it, and what was concluded. It does **not** run your science — compute stays in Levin Jobs, Slurm, or
 your own process, and this plugin captures their provenance.

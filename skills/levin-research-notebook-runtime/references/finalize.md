@@ -98,3 +98,7 @@ delivered PDF as stale. Use `dry_run: true` first and report what went.
   about the scientific statement, not the schema.
 - Rendering can fail on a figure that went missing or became unreadable; sources are retained and the
   fix is to refresh the artifact, then finalize again.
+
+A **rejected** `finalize` still writes a `blocked` report folder (source, no PDF). That is
+deliberate — the attempt is evidence — so `reports.total` counts blocked attempts too, and
+`prune_reports` is worth calling after a failed attempt, not only after repeated successes.
