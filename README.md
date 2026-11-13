@@ -1,6 +1,6 @@
 # Levin Research Notebook
 
-A personal Levin plugin (v0.12.1) that keeps scientific evidence alive past the chat window. It is a
+A personal Levin plugin (v0.13.0) that keeps scientific evidence alive past the chat window. It is a
 **record-lifecycle** plugin over a real filesystem workspace: it records what was done, what produced
 it, and what was concluded. It does **not** run your science — compute stays in Levin Jobs, Slurm, or
 your own process, and this plugin captures their provenance.
@@ -89,6 +89,8 @@ is the authority and is not restated here.
 | `research_record_finalize` | emit report sources and the PDF; commit terminal status only if the gates pass |
 | `research_record_prune_reports` | delete old PDF snapshot folders on explicit request; `dry_run` lists first |
 | `research_record_prune_revisions` | delete old revision snapshots, keeping the newest N; hand-edit copies are never removed (`dry_run` lists first) |
+| `research_record_suspend` | pause or resume recording so out-of-scope work (debugging the tooling) cannot enter the record |
+| `research_record_exclude` | set checkpoints/artifacts/runs aside so the report omits them, without deleting them; `restore` puts them back |
 | `research_record_index` | search records by term, with optional per-record counts |
 
 ## Guarantees the code enforces

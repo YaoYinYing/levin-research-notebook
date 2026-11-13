@@ -1076,6 +1076,82 @@ class RecordModelTests(unittest.TestCase):
         self.assertEqual(len(list(revisions.glob('*.json'))), 2)
         self.assertTrue((revisions / ('human-record-' + 'a' * 32 + '.md')).is_file())
 
+    def test_a_pause_stops_the_recorder_recording_itself(self):
+        # Debugging the notebook tooling inside the same session used to write the debugging
+        # process into the experiment, which then documented the recorder, not the science.
+        pause = self.n.suspend(self.eid, 'a', 'pause', 'debugging the recorder itself, out of scope')
+        self.assertTrue(pause['paused'])
+        for call in (lambda: self.n.checkpoint(self.eid, 'a', 'note', 'MCP call failed, retried'),
+                     lambda: self.n.register_artifact(self.eid, {'role': 'derived', 'location': str(self.write('dbg.csv')),
+                                                                 'description': 'probe output'}),
+                     lambda: self.n.register_run(self.eid, dict(backend='local', execution_status='success',
+                                                               command='python probe.py',
+                                                               environment={'python': '3.11'}))):
+            with self.assertRaises(Exception) as caught:
+                call()
+            self.assertIn('Recording is paused', str(caught.exception))
+        self.n.suspend(self.eid, 'a', 'resume')
+        self.n.checkpoint(self.eid, 'a', 'note', 'recorded again after resume')
+        record = (self.directory / 'record.md').read_text(encoding='utf-8')
+        self.assertIn('recorded again after resume', record)
+
+    def test_a_pause_needs_a_reason_and_cannot_nest(self):
+        with self.assertRaises(Exception) as caught:
+            self.n.suspend(self.eid, 'a', 'pause', 'debug')
+        self.assertIn('reason', str(caught.exception))
+        self.n.suspend(self.eid, 'a', 'pause', 'debugging the recorder itself')
+        with self.assertRaises(Exception) as caught:
+            self.n.suspend(self.eid, 'a', 'pause', 'debugging the recorder itself')
+        self.assertIn('already paused', str(caught.exception))
+
+    def test_the_suspension_window_is_stated_in_the_report(self):
+        self.n.suspend(self.eid, 'a', 'pause', 'debugging the recorder itself')
+        self.n.suspend(self.eid, 'a', 'resume')
+        self.n.checkpoint(self.eid, 'a', 'method', 'Ran the real analysis')
+        record = (self.directory / 'record.md').read_text(encoding='utf-8')
+        self.assertIn('记录范围', record)
+        self.assertIn('debugging the recorder itself', record)
+
+    def test_excluding_an_entry_hides_it_without_deleting_it(self):
+        junk = self.n.checkpoint(self.eid, 'a', 'note', 'plugin returned 500, retried twice')['checkpoint_id']
+        self.n.checkpoint(self.eid, 'a', 'method', 'Ran the real analysis')
+        self.n.exclude(self.eid, 'a', [junk], 'this is recorder debugging, not the experiment')
+        record = (self.directory / 'record.md').read_text(encoding='utf-8')
+        self.assertNotIn('plugin returned 500', record)
+        self.assertIn('Ran the real analysis', record)
+        # Not deleted: the manifest keeps it, and the report says it was set aside and why.
+        self.assertTrue(any(c['id'] == junk and c.get('excluded')
+                            for c in self.n._load(self.eid)['checkpoints']))
+        self.assertIn(junk, record)
+        self.assertIn('this is recorder debugging, not the experiment', record)
+        self.n.exclude(self.eid, 'a', [junk], 'restoring after scope review', restore=True)
+        self.assertIn('plugin returned 500', (self.directory / 'record.md').read_text(encoding='utf-8'))
+
+    def test_exclusion_needs_a_reason(self):
+        junk = self.n.checkpoint(self.eid, 'a', 'note', 'plugin returned 500, retried twice')['checkpoint_id']
+        with self.assertRaises(Exception) as caught:
+            self.n.exclude(self.eid, 'a', [junk], 'noise')
+        self.assertIn('reason', str(caught.exception))
+
+    def test_an_excluded_artifact_is_no_longer_citable(self):
+        run = self.figure_run()
+        ghost = self.n.register_artifact(self.eid, {'role': 'derived', 'location': str(self.write('ghost.csv')),
+                                                    'description': 'probe output'})['artifact_id']
+        self.n.exclude(self.eid, 'a', [ghost], 'probe output from debugging the recorder')
+        with self.assertRaises(Exception) as caught:
+            self.n.register_artifact(self.eid, {'role': 'figure', 'location': str(self.write('f.png')),
+                                                'description': 'plot', 'run_id': run, 'input_ids': [ghost]})
+        self.assertIn('Unknown artifact input reference', str(caught.exception))
+
+    def test_evidence_a_live_conclusion_leans_on_cannot_be_set_aside(self):
+        run = self.figure_run()
+        table = self.n.register_artifact(self.eid, {'role': 'table', 'location': str(self.write('t.csv')),
+                                                    'description': 'measured values'})['artifact_id']
+        self.n.checkpoint(self.eid, 'a', 'conclusion', '界面静电廊道是唯一幸存支柱', evidence_ids=[table])
+        with self.assertRaises(Exception) as caught:
+            self.n.exclude(self.eid, 'a', [table], 'tidying up the record')
+        self.assertIn('cited by conclusion', str(caught.exception))
+
     def test_a_cited_figure_is_placed_next_to_the_finding_that_cites_it(self):
         run = self.figure_run()
         figure = self.n.register_artifact(self.eid, {'role': 'figure', 'location': str(self.write('cited.png')),

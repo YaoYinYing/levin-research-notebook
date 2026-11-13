@@ -89,7 +89,17 @@ class NotebookError(ValueError): pass
 # the reference_id it registered itself. Both used to look "unknown" in every *other*
 # field, which cost a real user five failed calls, so resolution happens in one place.
 def _known_artifacts(m):
-    return {a['id']: a for a in m['artifacts']}
+    # An excluded artifact is not citable: it was set aside as tooling chatter, and a new
+    # citation that resolves to it would drag it back into the record through the side door.
+    return {a['id']: a for a in m['artifacts'] if not a.get('excluded')}
+
+
+def _active_suspension(m):
+    """The open recording pause, if one is in force."""
+    for window in reversed(m.get('suspensions') or []):
+        if not window.get('closed_at'):
+            return window
+    return None
 
 
 def _resolve_artifact(ref, known):
@@ -146,13 +156,20 @@ SCHEMA = {
  'hypothesis':{'type':'string'},'expected_result':{'type':'string'},'lessons':{'type':'array','items':{'type':'string'},'maxItems':100},'plans':{'type':'array','items':{'type':'string'},'maxItems':100},'execution_status':{'enum':['wip','success','failed']},
  'interpretation':{'type':'string'},'limitations':{'type':'string'},'retention':{'type':'string'},
  'agents':{'type':'array','items':{'type':'string'},'uniqueItems':True},
- 'checkpoints':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['id','created_at','agent_id','kind','text','evidence_ids'], 'properties':{'id':{'type':'string'},'created_at':{'type':'string'},'agent_id':{'type':'string'},'kind':{'enum':['method','observation','failure','conclusion','conditional','resume','note']},'text':{'type':'string','minLength':1},'evidence_ids':{'type':'array','items':{'type':'string'}},'title':{'type':'string'},'replica':{'type':['integer','null']},'retry':{'type':['integer','null']},'when_note':{'type':'string'},'refers_to':{'type':['string','null']},'supersedes':{'type':['string','null']}}}},
+ 'checkpoints':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['id','created_at','agent_id','kind','text','evidence_ids'], 'properties':{'id':{'type':'string'},'created_at':{'type':'string'},'agent_id':{'type':'string'},'kind':{'enum':['method','observation','failure','conclusion','conditional','resume','note']},'text':{'type':'string','minLength':1},'evidence_ids':{'type':'array','items':{'type':'string'}},'title':{'type':'string'},'replica':{'type':['integer','null']},'retry':{'type':['integer','null']},'when_note':{'type':'string'},'refers_to':{'type':['string','null']},'supersedes':{'type':['string','null']},
+   # Set aside rather than deleted: an entry that turns out to be tooling chatter
+   # stays in the manifest and the revisions, but the report does not render it.
+   'excluded':{'type':'boolean'},'exclusion_reason':{'type':'string'},'excluded_at':{'type':'string'}}}},
  'artifacts':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['id','created_at','role','location','external','description','input_ids','script_id','run_id','sha256','checksum_origin','size_bytes','availability','conditions'], 'properties':{'id':{'type':'string'},'created_at':{'type':'string'},'role':{'enum':['raw','derived','script','figure','log','input','table','deliverable']},'location':{'type':'string','minLength':1},'external':{'type':'boolean'},'description':{'type':'string'},'input_ids':{'type':'array','items':{'type':'string'}},'script_id':{'type':['string','null']},'run_id':{'type':['string','null']},'sha256':{'type':['string','null'],'pattern':'^[a-f0-9]{64}$'},'source_origin':{'enum':['local_original','remote_copy','unspecified']},'remote_host':{'type':['string','null']},'remote_path':{'type':['string','null']},'remote_copy_permission':{'type':['string','null']},'reference_id':{'type':['string','null']},'checksum_origin':{'enum':['computed','supplied_unverified','not_computed']},'size_bytes':{'type':['integer','null'],'minimum':0},'availability':{'enum':['local','missing','external_unverified']},'conditions':{'type':'object'},
    # A regenerated figure is a normal scientific event, not tampering, so an artifact
    # carries how many times its bytes were re-registered and whether it is retired.
    'revision':{'type':'integer','minimum':1},'retired':{'type':'boolean'},
-   'supersedes':{'type':['string','null']},'superseded_by':{'type':['string','null']}}}},
- 'runs':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['id','created_at','backend','external_id','execution_status','command','parameters','environment','input_ids','output_ids','failure'], 'properties':{'id':{'type':'string'},'created_at':{'type':'string'},'backend':{'enum':['local','levin','slurm','external']},'host':{'type':'string','minLength':1},'external_id':{'type':'string'},'reference_id':{'type':['string','null']},'execution_status':{'enum':['wip','success','failed']},'command':{'type':'string'},'parameters':{'type':'object'},'environment':{'type':'object'},'input_ids':{'type':'array','items':{'type':'string'}},'output_ids':{'type':'array','items':{'type':'string'}},'failure':{'type':'string'}}}},
+   'supersedes':{'type':['string','null']},'superseded_by':{'type':['string','null']},
+   'excluded':{'type':'boolean'},'exclusion_reason':{'type':'string'},'excluded_at':{'type':'string'}}}},
+ 'runs':{'type':'array','maxItems':500,'items':{'type':'object','additionalProperties':False,'required':['id','created_at','backend','external_id','execution_status','command','parameters','environment','input_ids','output_ids','failure'], 'properties':{'id':{'type':'string'},'created_at':{'type':'string'},'backend':{'enum':['local','levin','slurm','external']},'host':{'type':'string','minLength':1},'external_id':{'type':'string'},'reference_id':{'type':['string','null']},'execution_status':{'enum':['wip','success','failed']},'command':{'type':'string'},'parameters':{'type':'object'},'environment':{'type':'object'},'input_ids':{'type':'array','items':{'type':'string'}},'output_ids':{'type':'array','items':{'type':'string'}},'failure':{'type':'string'},
+   'excluded':{'type':'boolean'},'exclusion_reason':{'type':'string'},'excluded_at':{'type':'string'}}}},
+ 'suspensions':{'type':'array','maxItems':200,'items':{'type':'object','additionalProperties':False,'required':['id','opened_at','agent_id','reason'],
+   'properties':{'id':{'type':'string'},'opened_at':{'type':'string'},'closed_at':{'type':['string','null']},'agent_id':{'type':'string'},'reason':{'type':'string','minLength':1}}}},
  'visualization':{'type':['object','null'],'additionalProperties':False,'required':['beneficial','reason','figure_ids','reviewed_by'], 'properties':{'beneficial':{'type':'boolean'},'reason':{'type':'string','minLength':1},'figure_ids':{'type':'array','items':{'type':'string'}},'reviewed_by':{'type':'string','minLength':1}}},
  'reports':{'type':'array','items':{'type':'object'}},'requests':{'type':'object'},
  'usage_at_init':{'type':'object'},'usage_at_finalize':{'type':'object'},'workspace_dir':{'type':'string'},
@@ -349,6 +366,10 @@ class Notebook:
                                 '(the observation or conclusion it depends on)')
         p=dict(op='checkpoint',agent_id=agent_id,kind=kind,body=body,evidence_ids=list(evidence_ids),execution_status=execution_status,title=title,replica=replica,retry=retry,when_note=when_note,refers_to=refers_to,supersedes=supersedes)
         def change(m):
+            window=_active_suspension(m)
+            if window:
+                raise NotebookError('Recording is paused since '+window['opened_at']+' ('+window['reason']+
+                                    '); resume with action=resume before adding evidence to this record')
             arts=_known_artifacts(m)
             resolved=[]
             for ref in evidence_ids:
@@ -451,6 +472,10 @@ class Notebook:
             if artifact['role'] in ('raw','input') and size and size>LARGE_COPY_BYTES:
                 raise NotebookError('A '+format(size)+'-byte remote original must stay on '+remote_host+' and be referenced; permission covers small working copies only')
         def change(m):
+            window=_active_suspension(m)
+            if window:
+                raise NotebookError('Recording is paused since '+window['opened_at']+' ('+window['reason']+
+                                    '); resume with action=resume before adding evidence to this record')
             known=_known_artifacts(m)
             for ref in artifact.get('input_ids',[]):
                 if _resolve_artifact(ref,known) is None:
@@ -573,6 +598,10 @@ class Notebook:
         allowed={'id','backend','host','external_id','execution_status','command','parameters','environment','input_ids','output_ids','failure','reference_id'}
         if set(run)-allowed: raise NotebookError('Unknown run metadata fields')
         def change(m):
+            window=_active_suspension(m)
+            if window:
+                raise NotebookError('Recording is paused since '+window['opened_at']+' ('+window['reason']+
+                                    '); resume with action=resume before adding evidence to this record')
             known=_known_artifacts(m)
             resolved_io={}
             for field in ('input_ids','output_ids'):
@@ -610,14 +639,19 @@ class Notebook:
         errors=[]; warnings=[]; budget=HASH_BUDGET
         for e in VALIDATOR.iter_errors(m): errors.append(f'{list(e.path)}: {e.message}')
         if errors: return {'valid':False,'errors':errors,'warnings':warnings}
-        arts={a['id']:a for a in m['artifacts']}; runs={r['id']:r for r in m['runs']}
+        # Only what the report renders. An excluded entry is neither citable nor required
+        # to be complete; its integrity is still covered by the schema and by `revisions/`.
+        shown=[a for a in m['artifacts'] if not a.get('excluded')]
+        live_runs=[r for r in m['runs'] if not r.get('excluded')]
+        live_checkpoints=[c for c in m['checkpoints'] if not c.get('excluded')]
+        arts={a['id']:a for a in shown}; runs={r['id']:r for r in live_runs}
         if len(arts)!=len(m['artifacts']) or len(runs)!=len(m['runs']): errors.append('Duplicate evidence identifiers')
         # Decide which files get re-hashed before the structural loop runs. The budget used
         # to be spent in manifest order, so one large trajectory could consume all 64 MiB
         # and leave every figure unverified while the record still reported valid.
         plan={}
         candidates=[]
-        for a in m['artifacts']:
+        for a in shown:
             if a.get('retired') or not a['sha256']: continue
             try: _,_,path=self.location(a['location'])
             except Exception: continue
@@ -629,7 +663,7 @@ class Notebook:
                 plan[aid]=None if digest(path)==recorded else 'mismatch'
             else:
                 plan[aid]='skipped'
-        for a in m['artifacts']:
+        for a in shown:
             aid=a['id']
             try: _,_,path=self.location(a['location'])
             except Exception as e: errors.append(f'{aid}: {e}'); continue
@@ -664,17 +698,22 @@ class Notebook:
             if a['role']=='figure':
                 if not a['input_ids'] or not a['script_id'] or not a['run_id']: errors.append(f'{aid}: incomplete figure provenance')
                 if a['run_id'] in runs and runs[a['run_id']]['execution_status']!='success': errors.append(f'{aid}: figure generation run not successful')
-        for r in m['runs']:
+        for r in live_runs:
             if (set(r['input_ids'])|set(r['output_ids']))-arts.keys(): errors.append(f'{r["id"]}: missing run artifact')
             if r['execution_status']=='failed' and not r['failure']: errors.append(f'{r["id"]}: missing failure details')
             if not r['environment'] or not r['command']: errors.append(f'{r["id"]}: incomplete execution provenance')
             if not r.get('host'): warnings.append(f'{r["id"]}: no executing host recorded (register the run again to add it)')
-        for c in m['checkpoints']:
+        hidden={a['id'] for a in m['artifacts'] if a.get('excluded')} | {r['id'] for r in m['runs'] if r.get('excluded')}
+        for c in live_checkpoints:
+            for ref in c.get('evidence_ids') or []:
+                if ref in hidden:
+                    errors.append(f"{c['id']}: cites excluded evidence {ref}; restore it or correct the claim")
+        for c in live_checkpoints:
             if set(c['evidence_ids'])-(arts.keys()|runs.keys()): errors.append(f'{c["id"]}: dangling evidence')
             if c['kind']=='conclusion' and not c['evidence_ids']: errors.append(f'{c["id"]}: unsupported conclusion')
         if final:
             if m['execution_status']=='wip': errors.append('Stored execution_status is wip; final_readiness evaluates the saved manifest, so this line clears when finalize is called with success or failed')
-            if any(r['execution_status']=='wip' for r in m['runs']): errors.append('Unfinished run remains')
+            if any(r['execution_status']=='wip' for r in live_runs): errors.append('Unfinished run remains')
             try:
                 import units as _units
                 for issue in _units.check_all(m.get('quantities') or []):
@@ -684,8 +723,8 @@ class Notebook:
                 warnings.append(f'unit check unavailable: {error}')
             if not m['limitations'].strip(): errors.append('Explicit limitations required')
             if not m['interpretation'].strip(): errors.append('Explicit interpretation required (may be inconclusive)')
-            if not m['checkpoints']: errors.append('At least one methods, observations or failure checkpoint required')
-            if m['execution_status']=='failed' and not any(c['kind']=='failure' for c in m['checkpoints']) and not any(r['failure'] for r in m['runs']): errors.append('Failed experiment requires failure details')
+            if not live_checkpoints: errors.append('At least one methods, observations or failure checkpoint required')
+            if m['execution_status']=='failed' and not any(c['kind']=='failure' for c in live_checkpoints) and not any(r['failure'] for r in live_runs): errors.append('Failed experiment requires failure details')
             v=m['visualization']
             if v is None: errors.append('Visualization assessment required')
             else:
@@ -1004,6 +1043,84 @@ class Notebook:
                 'removed_count':len(removable),'reclaimable_bytes':total,
                 'reclaimable':human_bytes(total),'kept':len(snapshots)-len(removable),
                 'dry_run':dry_run}
+
+    def suspend(self, eid, agent_id, action, reason=''):
+        """Open or close a recording pause, so unrelated work cannot enter the record.
+
+        Debugging the notebook tooling inside the same session that uses it used to write
+        the debugging itself into the experiment: the record then documents the recorder
+        instead of the experiment. A pause is an explicit, reasoned window — the manifest
+        keeps it, the report names it, and while it is open no checkpoint, artifact or run
+        can be added.
+        """
+        safe_name(agent_id,'agent_id')
+        if action not in ('pause','resume'):
+            raise NotebookError("action must be 'pause' or 'resume'")
+        if action=='pause':
+            text(reason,'reason')
+            if len(reason.strip())<8:
+                raise NotebookError('a pause needs a reason naming why the work is out of scope '
+                                    '(at least 8 characters), so the gap is explainable later')
+        def change(m):
+            window=_active_suspension(m)
+            if action=='pause':
+                if window:
+                    raise NotebookError('Recording is already paused since '+window['opened_at']+
+                                        ' ('+window['reason']+'); resume before pausing again')
+                entry=dict(id=uid('suspension'),opened_at=now(),closed_at=None,agent_id=agent_id,
+                           reason=reason.strip())
+                m.setdefault('suspensions',[]).append(entry)
+                return {'suspension_id':entry['id'],'paused':True,'opened_at':entry['opened_at']}
+            if not window:
+                raise NotebookError('Recording is not paused; nothing to resume')
+            window['closed_at']=now()
+            return {'suspension_id':window['id'],'paused':False,
+                    'opened_at':window['opened_at'],'closed_at':window['closed_at']}
+        return self.mutate(eid,None,dict(op='suspend',action=action,agent_id=agent_id,reason=reason),change)
+
+    def exclude(self, eid, agent_id, targets, reason, restore=False):
+        """Set entries aside from the report without deleting them.
+
+        Excluding is not deleting: the entry stays in the manifest and in `revisions/`, the
+        appendix lists what was set aside and why, and `restore` puts it back. That is the
+        difference between tidying a record and rewriting history.
+        """
+        safe_name(agent_id,'agent_id'); text(reason,'reason')
+        if not isinstance(targets,(list,tuple)) or not targets:
+            raise NotebookError('targets must be a non-empty list of checkpoint, artifact or run ids')
+        if len(targets)>500: raise NotebookError('at most 500 targets per call')
+        for target in targets: text(target,'target',limit=120)
+        if len(reason.strip())<8:
+            raise NotebookError('an exclusion needs a reason (at least 8 characters) saying why the '
+                                'entry is out of scope; an unexplained gap is worse than clutter')
+        def change(m):
+            checkpoints={c['id']:c for c in m['checkpoints']}
+            artifacts={a['id']:a for a in m['artifacts']}
+            runs={r['id']:r for r in m['runs']}
+            changed=[]; unknown=[]
+            live_conclusions=[c for c in m['checkpoints']
+                              if c['kind']=='conclusion' and not c.get('excluded')]
+            for target in targets:
+                entry=checkpoints.get(target) or artifacts.get(target) or runs.get(target)
+                if entry is None:
+                    unknown.append(target); continue
+                if not restore:
+                    # A conclusion that leans on the entry would become an unsupported claim
+                    # the moment the entry left the render.
+                    holders=[c['id'] for c in live_conclusions if target in (c.get('evidence_ids') or [])]
+                    if holders and target not in {c['id'] for c in live_conclusions}:
+                        raise NotebookError(f'{target} is cited by conclusion {holders[0]}; correct that '
+                                            'conclusion (or exclude it too) before setting its evidence aside')
+                entry['excluded']=not restore
+                entry['exclusion_reason']=reason.strip() if not restore else ''
+                entry['excluded_at']=now() if not restore else ''
+                changed.append(target)
+            if unknown:
+                raise NotebookError('Unknown ids to exclude: '+', '.join(unknown[:4])+
+                                    ('…' if len(unknown)>4 else '')+'. Pass checkpoint-, artifact- or run- ids.')
+            return {'excluded':changed if not restore else [],'restored':changed if restore else [],
+                    'reason':reason.strip(),'count':len(changed)}
+        return self.mutate(eid,None,dict(op='exclude',targets=list(targets),reason=reason,restore=restore),change)
 
     def index(self,query='',limit=100,offset=0,include_summary=False):
         rows=[]; errors=[]
@@ -1524,7 +1641,55 @@ class Notebook:
         return ordered
 
     @staticmethod
+    def _visible(m):
+        """The manifest as the report should see it: excluded entries removed.
+
+        One filter at the render entry keeps every section builder honest — a set-aside
+        observation cannot leak into 实验结果, a set-aside artifact cannot appear in 材料 or
+        the appendix table, and an index count cannot disagree with the pages.
+        """
+        view=dict(m)
+        view['checkpoints']=[c for c in m['checkpoints'] if not c.get('excluded')]
+        view['artifacts']=[a for a in m['artifacts'] if not a.get('excluded')]
+        view['runs']=[r for r in m['runs'] if not r.get('excluded')]
+        return view
+
+    @staticmethod
+    def _sec_scope(full, visible):
+        """What the report deliberately leaves out, and the windows it was not written.
+
+        Hiding a debug entry without saying so would make a tidy page look like a complete
+        record. Both lists are short by nature; each row names its own reason.
+        """
+        dropped=[
+            *(('checkpoint', c) for c in full['checkpoints'] if c.get('excluded')),
+            *(('artifact', a) for a in full['artifacts'] if a.get('excluded')),
+            *(('run', r) for r in full['runs'] if r.get('excluded')),
+        ]
+        windows=[w for w in (full.get('suspensions') or []) if w]
+        if not dropped and not windows: return []
+        out=['','### 记录范围：已搁置条目与暂停窗口','']
+        if dropped:
+            out += [f'以下 {len(dropped)} 条与本次科学任务无关（多为调试记录工具本身的过程），',''
+                    '已从正文与表格中搁置；原文仍保存在清单与 `revisions/` 中，可用 restore 放回。','',
+                    '| 类型 | ID | 搁置原因 |','| --- | --- | --- |']
+            for kind, entry in dropped:
+                out.append(f"| {kind} | `{entry['id']}` | {Notebook._cell(entry.get('exclusion_reason') or '未填写')} |")
+            out.append('')
+        if windows:
+            out += [f'记录曾被暂停 {len(windows)} 次，暂停期间不写入任何条目：','',
+                    '| 开始 | 结束 | 原因 |','| --- | --- | --- |']
+            for window in windows:
+                out.append(f"| {Notebook._stamp(window['opened_at'])} | "
+                           f"{Notebook._stamp(window['closed_at']) if window.get('closed_at') else '尚未恢复'} | "
+                           f"{Notebook._cell(window.get('reason') or '未填写')} |")
+            out.append('')
+        return out
+
+    @staticmethod
     def markdown(m):
+        full=m
+        m=Notebook._visible(m)
         title=m['title'].replace('\n',' ')
         notes=m.get('footnotes') or []
         stamp=f"***{Notebook._stamp(m['created_at'])} — {Notebook._stamp(m['updated_at'])}***"
@@ -1613,6 +1778,7 @@ class Notebook:
             if r['output_ids']: lines.append("outputs     "+', '.join(r['output_ids']))
             if r['execution_status']=='failed': lines.append("failure     "+r['failure'])
             lines += ['```']
+        lines += Notebook._sec_scope(full, m)
         lines += ['','## 保存与复现','',f"保留策略：{m['retention']}",'',
                   '清单与溯源通过校验不等于科学可复现。校验和仅在实测通过时证明同一性。',
                   '人工笔记：`notes.md`；历史清单：`revisions/`；报告：`reports/`。','']

@@ -34,6 +34,38 @@ recorded under `0.11.9`, which is the release that shipped it.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-13
+
+Keeping the recorder out of the record. A session that debugged this plugin while using it wrote the
+debugging into the experiment: the record then documented the recorder instead of the science.
+
+### Added
+- Records:
+  - `research_record_suspend` opens and closes a recording pause. While it is open, `checkpoint`,
+    `register_artifact` and `register_run` are refused with `Recording is paused since <time>
+    (<reason>)`; `validate`, `finalize`, `index`, `exclude` and the prune tools still work. The reason
+    is required, and the report prints every window in 记录范围 — a gap is stated, not silently absent.
+  - `research_record_exclude` sets checkpoints, artifacts or runs aside: they leave 实验结果, 材料, the
+    artifact table and the run list, and can no longer be cited. Nothing is deleted — the manifest and
+    `revisions/` keep the entry, and the appendix table **记录范围：已搁置条目与暂停窗口** names each
+    id with its reason. `restore: true` puts it back.
+- Tools:
+  - ninth and tenth `research_record_*` tools (11 declared in total).
+
+### Changed
+- Records:
+  - report rendering filters excluded entries at one point — the render entry — so no section builder
+    can leak a set-aside observation, artifact or run into the pages.
+  - `validate` cross-checks only what the report shows. An excluded entry is neither citable nor
+    required to be complete; it also reports a live conclusion that cites excluded evidence as an
+    error, because that claim would otherwise look supported while its evidence is invisible.
+  - excluding an artifact or run that a live conclusion cites is refused at write time with the
+    conclusion named, so the contradiction is caught where it can still be fixed cheaply.
+
+### Tests
+- 189 cases (182 + pause, resume, reason guards, exclusion visibility, restore, non-citability, and
+  the conclusion guard).
+
 ## [0.12.1] - 2026-11-13
 
 Figure placement and in-text citation, reported as "we seem to be writing Microsoft Office": every

@@ -123,3 +123,8 @@ Behaviour that is documented where it is used, not here:
   data folder and common large-data extensions; it is not a comprehensive Git size policy.
 
 No mandatory database, web service, cloud account, dashboard, telemetry, or model download.
+
+- A pause blocks writes but does not retract anything written before it, and exclusion hides an entry
+  from the report without changing the manifest's scientific content: neither one turns a wrong finding
+  into a right one. There is no per-agent pause (a pause stops the whole record) and no scheduled
+  auto-pause — the agent must notice that the session stopped being about the experiment.

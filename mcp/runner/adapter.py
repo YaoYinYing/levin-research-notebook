@@ -42,6 +42,10 @@ def invoke(operation, arguments):
             a['eid']=a.pop('experiment_id'); return n.finalize(**a)
         if operation=='prune_reports':
             return n.prune_reports(a['experiment_id'], a.get('keep','last-success'), a.get('dry_run',False))
+        if operation=='suspend':
+            return n.suspend(a['experiment_id'], a['agent_id'], a['action'], a.get('reason',''))
+        if operation=='exclude':
+            return n.exclude(a['experiment_id'], a['agent_id'], a['targets'], a['reason'], a.get('restore',False))
         if operation=='prune_revisions':
             return n.prune_revisions(a['experiment_id'], a.get('keep',20), a.get('dry_run',False))
         if operation=='index':
@@ -62,3 +66,5 @@ def research_record_finalize(context,arguments): return invoke('finalize',argume
 def research_record_index(context,arguments): return invoke('index',arguments)
 def research_record_prune_reports(context,arguments): return invoke('prune_reports',arguments)
 def research_record_prune_revisions(context,arguments): return invoke('prune_revisions',arguments)
+def research_record_suspend(context,arguments): return invoke('suspend',arguments)
+def research_record_exclude(context,arguments): return invoke('exclude',arguments)

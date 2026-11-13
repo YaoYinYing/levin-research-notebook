@@ -52,6 +52,9 @@ finalize, in that order, and each file is short enough to load when its stage be
 - A regenerated figure is a normal event: re-register the same `(location, role)` and it records
   `revision N+1` with a warning, while changed `raw`/`input` evidence stays an error. To retire an
   obsolete artifact, register its replacement with `supersedes`, or pass `retired: true`.
+- The record is about the experiment, not about the tooling. If the session turns to debugging the
+  notebook itself, pause recording (`research_record_suspend`), and set any entry that already
+  slipped in aside with `research_record_exclude` — never by editing or deleting history.
 - `ok` is not completion. Read `finalized`, `report.render_state` and `validation`; a blocked attempt
   leaves a source-only report folder with no PDF.
 - You choose `font_profile` from the report's content; see [report](references/report.md#fonts).

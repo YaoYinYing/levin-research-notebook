@@ -115,3 +115,48 @@ Raw remote data **stays remote**. Compute there and bring back only lightweight 
 Never overwrite originals, upload private data, silently fetch an external reference, delete scratch,
 or commit large datasets. Completion implies no retention policy. Keep secrets out of commands,
 metadata and URLs — URLs carrying userinfo or query strings are rejected outright.
+
+## Keeping the recorder out of the record
+
+Work that is not the experiment must not become part of it. Two mechanisms exist, and they are
+different: a pause prevents writing, an exclusion takes back what was already written.
+
+### Pause: stop writing while you are working on something else
+
+```
+research_record_suspend(experiment_id, agent_id, action="pause",
+                        reason="debugging the notebook plugin itself, out of scope")
+...                                  # no checkpoint/artifact/run can be added here
+research_record_suspend(experiment_id, agent_id, action="resume")
+```
+
+While a pause is open, `checkpoint`, `register_artifact` and `register_run` are refused with
+`Recording is paused since <time> (<reason>)`. The reason is required and must say why the work is out
+of scope — the report prints every window in 记录范围, so a gap in the record is stated instead of
+silently missing. `validate`, `finalize`, `index`, `exclude` and the prune tools still work.
+
+Use it the moment you notice the session is about the tooling rather than the science: fixing a plugin,
+retrying an MCP call, inspecting your own report markup.
+
+### Exclusion: set an entry aside without deleting it
+
+```
+research_record_exclude(experiment_id, agent_id, targets=["checkpoint-…", "artifact-…"],
+                        reason="this recorded the recorder, not the experiment")
+research_record_exclude(…, reason="restored after scope review", restore=True)
+```
+
+An excluded entry is not rendered: it disappears from 实验结果, from 材料, from the artifact table and
+from the run list, and it can no longer be cited (an alias that resolves to it is "unknown"). It is not
+deleted: the manifest keeps it, `revisions/` keeps every snapshot, and the appendix gains a
+**记录范围：已搁置条目与暂停窗口** table listing each id with its reason. `restore` puts it back.
+
+Two guards keep this honest rather than convenient:
+
+- a reason of at least 8 characters is required for both actions;
+- an artifact or run that a **live conclusion** cites cannot be excluded until that conclusion is
+  corrected or excluded too. Otherwise the report would carry a supported-looking claim whose evidence
+  is invisible.
+
+What exclusion cannot do: it does not repair wrong scientific content. Fix an incorrect finding by
+superseding it with `note`/`observation`, not by hiding it.
