@@ -1,6 +1,6 @@
 # Levin Research Notebook
 
-A personal Levin plugin (v0.11.9) that keeps scientific evidence alive past the chat window. It is a
+A personal Levin plugin (v0.11.10) that keeps scientific evidence alive past the chat window. It is a
 **record-lifecycle** plugin over a real filesystem workspace: it records what was done, what produced
 it, and what was concluded. It does **not** run your science — compute stays in Levin Jobs, Slurm, or
 your own process, and this plugin captures their provenance.
@@ -38,6 +38,10 @@ and the two failures you will hit without them — is in
   lifecycle stage at a time into `references/`. An agent mid-task loads `start` → `evidence` →
   `report` → `finalize`, never the whole tree. The stage chain also exists as a workflow:
   [`workflows/standard-research-notebook.md`](workflows/standard-research-notebook.md).
+- **Two skills ship with it.** `levin-research-notebook-runtime` is the agent-facing manual above.
+  [`skills/levin-labnote/`](skills/levin-labnote/SKILL.md) is the human-facing one: workflow,
+  installation, what the plugin will and will not do, usage, and the current limitations — written
+  as a single onboarding document rather than a stage-ordered tree.
 - **Deterministic tools** — same inputs, same filesystem result. Each call validates before and after,
   publishes the manifest atomically, and keeps every prior revision.
 - **Dimensional checking** — numeric results are recorded with units in `quantities`; a wrong dimension
@@ -144,6 +148,7 @@ cannot express — is [docs/limitations.md](docs/limitations.md).
 | Tests, release, doc rules | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | What changed between versions | [CHANGELOG.md](CHANGELOG.md) |
 | What an agent should do at this stage | [`skills/levin-research-notebook-runtime/SKILL.md`](skills/levin-research-notebook-runtime/SKILL.md) |
+| How to adopt it, and what it cannot do | [`skills/levin-labnote/SKILL.md`](skills/levin-labnote/SKILL.md) |
 
 ## Building with the Creator CLI
 
