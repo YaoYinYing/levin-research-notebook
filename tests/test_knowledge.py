@@ -326,5 +326,27 @@ class KnowledgeTests(unittest.TestCase):
         self.assertEqual(self.k.query()['total'], 1)
 
 
+class SpecVocabularyTests(unittest.TestCase):
+    """The kind vocabulary is declared twice — once in the code, once per tool schema.
+
+    A kind the library accepts but a tool schema rejects is invisible in unit tests and fatal
+    through the MCP boundary, so the two declarations are compared here rather than trusted.
+    """
+
+    def test_every_kind_the_library_accepts_is_accepted_by_every_tool_that_filters_on_kind(self):
+        import re
+        from knowledge import KINDS
+        spec = (ROOT / 'mcp' / 'runner' / 'plugin_spec.py').read_text(encoding='utf-8')
+        enums = re.findall(r"'kind':\{'enum':\[((?:'[a-z]+',?)+)\]", spec)
+        knowledge_enums = [[part.strip().strip("'") for part in enum.split(',') if part.strip()]
+                           for enum in enums]
+        knowledge_enums = [enum for enum in knowledge_enums if 'fact' in enum]
+        self.assertEqual(len(knowledge_enums), 2, 'expected one entry kind enum and one query filter')
+        for enum in knowledge_enums:
+            with self.subTest(enum=enum):
+                self.assertEqual(set(enum), set(KINDS),
+                                 'plugin_spec.py declares a different kind vocabulary than knowledge.py')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

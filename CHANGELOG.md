@@ -34,6 +34,24 @@ recorded under `0.11.9`, which is the release that shipped it.
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-11-20
+
+### Fixed
+- Knowledge:
+  - `research_knowledge_query` rejected `kind: "lesson"`. The kind vocabulary is declared twice —
+    once in `knowledge.py` and once per tool schema — and only the entry schema had been updated, so
+    the new kind was accepted when writing but impossible to filter on. Found while verifying the
+    deployed build, not by the suite.
+
+### Added
+- Tests:
+  - a vocabulary guard that compares every `kind` enum in `plugin_spec.py` against `KINDS`. A kind the
+    library accepts but a tool schema rejects is invisible to unit tests and fatal across the MCP
+    boundary, which is exactly how this shipped.
+
+### Tests
+- 219 cases (218 + the drift guard).
+
 ## [0.15.0] - 2026-11-20
 
 Lessons get a home. Failures were recorded as `failure` checkpoints and then died with their record, so

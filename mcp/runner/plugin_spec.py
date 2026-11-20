@@ -1,7 +1,7 @@
 from levin_plugin_sdk import Plugin, PythonRuntime, RuntimeCommand
 
 plugin = Plugin(
-    id='levin-research-notebook',version='0.15.0',display_name='Levin Research Notebook',
+    id='levin-research-notebook',version='0.15.1',display_name='Levin Research Notebook',
     description='Filesystem research evidence, experiment provenance and editable scientific reports.',
     server_name='runner',runtime=PythonRuntime(id='runner',python='3.11',project='./mcp/runner',cache_key='runner',
         packages=('jsonschema==4.23.0','filelock==3.16.1','reportlab==4.2.5','matplotlib==3.9.4','bibtexparser==2.1.0'),
@@ -95,7 +95,7 @@ knowledge_entry=obj({'agent_id':agent,'id':{'type':'string','pattern':'^kn-[0-9a
 KDEFS=[
  ('upsert','Record one unit of knowledge: a fact measured here, a conclusion drawn from facts, a boundary saying where it stops holding, or a derivation showing the chain. Provenance is resolved at write time and a claim that no record supports is refused.',obj({**common,'entry':knowledge_entry,'topic':{'type':'string','pattern':'^[a-z0-9][a-z0-9_-]{0,40}$'},'request_id':{'type':'string','pattern':'^[A-Za-z0-9][A-Za-z0-9_.-]{0,100}$'}},('workspace_dir','entry')),{'entry':{'agent_id':'contract','kind':'conclusion','statement':'Synthetic contract entry with no claims','confidence':'provisional'},'preview':True},True),
  ('query','Search the knowledge base across every topic: statement, conditions, derivation steps, tags, cited experiments and citations; whitespace-separated terms are combined with AND. Returns basis (workspace / external / derived) so a prior is never mistaken for a result.',obj({**common,'query':{'type':'string','maxLength':300},'topic':{'type':'string','pattern':'^[a-z0-9][a-z0-9_-]{0,40}$'},
-    'kind':{'enum':['fact','conclusion','boundary','derivation']},'tag':{'type':'string','maxLength':60},
+    'kind':{'enum':['fact','conclusion','boundary','derivation','lesson']},'tag':{'type':'string','maxLength':60},
     'confidence':{'enum':['established','provisional','refuted']},
     'basis':{'enum':['workspace','mixed','external','derived','none'],'description':'workspace = every citation is a local record; external = literature only; derived = follows from other entries.'},
     'include_retired':{'type':'boolean','default':False},'limit':{'type':'integer','minimum':1,'maximum':1000},'offset':{'type':'integer','minimum':0}},('workspace_dir',)),{'query':'interface','preview':True},False),
