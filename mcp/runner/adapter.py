@@ -88,6 +88,8 @@ def invoke_knowledge(operation, arguments):
             return k.query(a.pop('query',''), a.pop('kind',None), a.pop('tag',None),
                            a.pop('confidence',None), a.pop('basis',None), a.pop('topic',None),
                            a.pop('include_retired',False), a.pop('limit',50), a.pop('offset',0))
+        if operation=='knowledge_candidates':
+            return k.candidates(a.pop('include_promoted',False), a.pop('limit',100))
         if operation=='knowledge_validate': return k.validate()
         if operation=='knowledge_export': return k.export()
         raise NotebookError('Unknown knowledge operation')
@@ -99,5 +101,6 @@ def invoke_knowledge(operation, arguments):
 
 def research_knowledge_upsert(context,arguments): return invoke_knowledge('knowledge_upsert',arguments)
 def research_knowledge_query(context,arguments): return invoke_knowledge('knowledge_query',arguments)
+def research_knowledge_candidates(context,arguments): return invoke_knowledge('knowledge_candidates',arguments)
 def research_knowledge_validate(context,arguments): return invoke_knowledge('knowledge_validate',arguments)
 def research_knowledge_export(context,arguments): return invoke_knowledge('knowledge_export',arguments)

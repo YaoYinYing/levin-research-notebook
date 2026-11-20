@@ -1,7 +1,7 @@
 from levin_plugin_sdk import Plugin, PythonRuntime, RuntimeCommand
 
 plugin = Plugin(
-    id='levin-research-notebook',version='0.14.0',display_name='Levin Research Notebook',
+    id='levin-research-notebook',version='0.15.0',display_name='Levin Research Notebook',
     description='Filesystem research evidence, experiment provenance and editable scientific reports.',
     server_name='runner',runtime=PythonRuntime(id='runner',python='3.11',project='./mcp/runner',cache_key='runner',
         packages=('jsonschema==4.23.0','filelock==3.16.1','reportlab==4.2.5','matplotlib==3.9.4','bibtexparser==2.1.0'),
@@ -77,9 +77,14 @@ knowledge_steps={'type':'array','maxItems':50,'items':{'type':'object','addition
                           'description':'What this step rests on: a knowledge id, a checkpoint/artifact id, or the inference rule.'}}}}
 knowledge_entry=obj({'agent_id':agent,'id':{'type':'string','pattern':'^kn-[0-9a-f]{32}$','description':'Omit to create; pass to update in place.'},
     'topic':{'type':'string','pattern':'^[a-z0-9][a-z0-9_-]{0,40}$','description':'Shelf for a new entry, e.g. structural. Default general; an existing id keeps its own topic.'},
-    'kind':{'enum':['fact','conclusion','boundary','derivation'],'description':'fact = measured here; conclusion = follows from facts; boundary = where a conclusion stops holding; derivation = the chain from support to claim.'},
+    'kind':{'enum':['fact','conclusion','boundary','derivation','lesson'],'description':'fact = measured here; conclusion = follows from facts; boundary = where a conclusion stops holding; derivation = the chain from support to claim; lesson = what to do differently next time (requires lesson.remedy and a scope).'},
     'statement':{'type':'string','minLength':12,'maxLength':4000,'description':'The claim itself, one sentence.'},
     'detail':{'type':'string','maxLength':20000},'conditions':knowledge_conditions,
+    'lesson':{'type':'object','additionalProperties':False,'properties':{
+        'trigger':{'type':'string','maxLength':2000,'description':'When this bites: the situation that triggers it.'},
+        'symptom':{'type':'string','maxLength':4000,'description':'What went wrong, concretely enough to recognise next time.'},
+        'remedy':{'type':'string','maxLength':4000,'description':'What to do instead. Required for kind=lesson: a symptom with no remedy is a complaint.'},
+        'still_unclear':{'type':'string','maxLength':4000,'description':'What is still unsolved, so a half-fix does not read as a fix.'}}},
     'evidence':knowledge_evidence,'derived_from':{'type':'array','maxItems':50,'items':{'type':'string','pattern':'^kn-[0-9a-f]{32}$'}},
     'steps':knowledge_steps,'confidence':{'enum':['established','provisional','refuted']},
     'refuted_by':{'type':'string','maxLength':4000,'description':'Required when confidence=refuted: what disproved it. A refutation is the most reusable thing in a knowledge base.'},
@@ -94,6 +99,7 @@ KDEFS=[
     'confidence':{'enum':['established','provisional','refuted']},
     'basis':{'enum':['workspace','mixed','external','derived','none'],'description':'workspace = every citation is a local record; external = literature only; derived = follows from other entries.'},
     'include_retired':{'type':'boolean','default':False},'limit':{'type':'integer','minimum':1,'maximum':1000},'offset':{'type':'integer','minimum':0}},('workspace_dir',)),{'query':'interface','preview':True},False),
+ ('candidates','List failure checkpoints in records that no lesson cites yet, newest first. A lesson must have been paid for, and these are the receipts: promoting one is a decision, and leaving it in its record stays a valid one.',obj({**common,'include_promoted':{'type':'boolean','default':False},'limit':{'type':'integer','minimum':1,'maximum':500,'default':100}},('workspace_dir',)),{'include_promoted':True,'preview':True},False),
  ('validate','Re-read every citation in the knowledge base: report support whose experiment, checkpoint or artifact has since been deleted, corrected or excluded, plus broken derivation chains, asymmetric supersede links and type rules. This is what keeps the base from rotting silently.',obj({**common},('workspace_dir',)),{},False),
  ('export','Rebuild catalog.json and the human-readable brief.md from the topic indexes. The two are derived files, so this repairs them after a hand edit or a crash instead of trusting them.',obj({**common},('workspace_dir',)),{},True),
 ]

@@ -130,6 +130,93 @@ class KnowledgeTests(unittest.TestCase):
                                          'experiment_id': self.eid}]})
         self.assertIn('must not name an experiment', str(caught.exception))
 
+    # ---------- lessons ----------
+    def failure(self, text_value='BioEmu2 无 FoTO1 对照连续三次失败，最终删掉 OXT 端基才跑通', title='对照失败'):
+        return self.n.checkpoint(self.eid, 'agent-a', 'failure', text_value, title=title)['checkpoint_id']
+
+    def lesson(self, **extra):
+        payload = {'agent_id': 'agent-a', 'topic': 'protocol', 'kind': 'lesson',
+                   'statement': 'BioEmu2 propagate 前必须删掉 OXT 端基，否则 system YAML 解析失败',
+                   'lesson': {'trigger': '准备 BioEmu2 system YAML 时',
+                              'symptom': 'propagate 连续三次失败，报错指向多余端基',
+                              'remedy': '由 CIF 重建成 3-entity YAML 并删掉 OXT 后再提交'},
+                   'conditions': {'applies_to': 'BioEmu2 propagate 输入准备'},
+                   'evidence': [{'source': 'record', 'experiment_id': self.eid,
+                                 'checkpoint_id': self.failure()}],
+                   'confidence': 'provisional'}
+        payload.update(extra)
+        payload['lesson'] = extra.get('lesson', payload['lesson'])
+        return self.k.upsert(payload)
+
+    def test_a_lesson_needs_a_remedy(self):
+        # A symptom with no remedy is a complaint; it gives the next reader nothing to do.
+        with self.assertRaises(Exception) as caught:
+            self.lesson(lesson={'trigger': '准备 YAML 时', 'symptom': '三次失败'})
+        self.assertIn('remedy', str(caught.exception))
+
+    def test_a_lesson_needs_a_scope(self):
+        with self.assertRaises(Exception) as caught:
+            self.lesson(conditions={})
+        self.assertIn('applies_to', str(caught.exception))
+
+    def test_a_lesson_must_have_been_paid_for(self):
+        with self.assertRaises(Exception) as caught:
+            self.k.upsert({'agent_id': 'agent-a', 'kind': 'lesson',
+                           'statement': '提交长任务前应当先做小样本冒烟测试',
+                           'lesson': {'remedy': '先跑 3 帧确认能过再提交 300 帧'},
+                           'conditions': {'applies_to': '任何长任务'},
+                           'evidence': [{'source': 'external', 'citation': 'Doe 2024, DOI 10.1/x'}]})
+        self.assertIn('paid for', str(caught.exception))
+
+    def test_a_lesson_renders_its_remedy_and_leaves_the_unclear_part_visible(self):
+        made = self.lesson(lesson={'trigger': '准备 BioEmu2 system YAML 时',
+                                   'symptom': 'propagate 连续三次失败',
+                                   'remedy': '由 CIF 重建成 3-entity YAML 并删掉 OXT',
+                                   'still_unclear': 'OXT 之外是否还有其它端基会触发同一错误'})
+        self.assertEqual(made['kind'], 'lesson')
+        brief = (self.workspace / 'levin_knowledge' / 'brief.md').read_text(encoding='utf-8')
+        for expected in ('经验教训', '触发情境', '现象', '改法', '仍未解决'):
+            self.assertIn(expected, brief)
+        self.assertIn('3-entity YAML', brief)
+
+    def test_a_lesson_resting_on_a_non_failure_is_flagged(self):
+        observation = self.observation('观察：清理端基后 propagate 一次通过')
+        self.lesson(evidence=[{'source': 'record', 'experiment_id': self.eid,
+                               'checkpoint_id': observation}])
+        warnings = self.k.validate()['warnings']
+        self.assertTrue(any('cost voucher' in w for w in warnings), warnings)
+
+    def test_a_lesson_on_a_failure_is_not_flagged(self):
+        self.lesson()
+        warnings = self.k.validate()['warnings']
+        self.assertFalse(any('cost voucher' in w for w in warnings), warnings)
+
+    # ---------- promotion review ----------
+    def test_candidates_lists_unpromoted_failures_only(self):
+        promoted = self.failure('第一个失败：propagate 连续三次失败后删 OXT 才通过', title='已提升')
+        unpromoted = self.failure('第二个失败：上传 20 个快照撞 Cloudflare 524', title='未提升')
+        self.n.checkpoint(self.eid, 'agent-a', 'observation', '一条观察，不是失败，不该出现在候选里')
+        self.lesson(evidence=[{'source': 'record', 'experiment_id': self.eid, 'checkpoint_id': promoted}])
+        listing = self.k.candidates()
+        ids = [row['checkpoint_id'] for row in listing['candidates']]
+        self.assertIn(unpromoted, ids)
+        self.assertNotIn(promoted, ids)
+        self.assertEqual(listing['already_promoted'], 1)
+        with_promoted = self.k.candidates(include_promoted=True)
+        rows = {row['checkpoint_id']: row for row in with_promoted['candidates']}
+        self.assertTrue(rows[promoted]['promoted'])
+        self.assertEqual(rows[promoted]['lesson_id'],
+                         next(r['lesson_id'] for r in with_promoted['candidates']
+                              if r['checkpoint_id'] == promoted))
+
+    def test_candidates_skip_excluded_failures(self):
+        kept = self.failure('留在记录里的失败：对照三次不通过', title='保留')
+        dropped = self.failure('被搁置的失败：调试工具本身造成的报错', title='搁置')
+        self.n.exclude(self.eid, 'agent-a', [dropped], 'recorder debugging, not the experiment')
+        ids = [row['checkpoint_id'] for row in self.k.candidates()['candidates']]
+        self.assertIn(kept, ids)
+        self.assertNotIn(dropped, ids)
+
     # ---------- provenance ----------
     def test_dangling_and_corrected_evidence_are_refused_at_write_time(self):
         with self.assertRaises(Exception) as caught:

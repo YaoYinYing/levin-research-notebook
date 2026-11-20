@@ -37,6 +37,7 @@ fact in `electrostatics`. `derived_from` may point anywhere in the base.
 | `conclusion` | what follows from facts | it is over-general | evidence or `derived_from` |
 | `boundary` | where a conclusion stops holding | the limit is missing | `conditions.fails_when` non-empty |
 | `derivation` | how support leads to the claim | a link breaks | ≥2 ordered `steps` |
+| `lesson` | what to do differently next time | it is unactionable or over-applied | `lesson.remedy` + `conditions.applies_to` + record evidence |
 
 These are hard rules: a violating entry is **refused at write time**, not stored and flagged. A
 `boundary` without `fails_when` is a fact wearing a cautionary label, and a base that accepts those
@@ -44,6 +45,56 @@ cannot be read at face value.
 
 Give every conclusion and boundary a `conditions.applies_to`. A claim with no stated scope reads as
 universal, which is almost never what was measured.
+
+## Lessons: operative, not epistemic
+
+A `lesson` is the one kind that does not claim what the world is like — it says what to do next time.
+That difference decides its rules:
+
+| Field | Why it exists |
+|---|---|
+| `lesson.trigger` | the situation that sets it off, so a reader recognises it |
+| `lesson.symptom` | what went wrong, concretely enough to match |
+| `lesson.remedy` | **required** — a symptom with no remedy is a complaint |
+| `lesson.still_unclear` | what is not solved yet, so a half-fix does not read as a fix |
+
+```jsonc
+{"agent_id": "agent-a", "topic": "protocol", "kind": "lesson",
+ "statement": "BioEmu2 propagate 前必须删掉 OXT 端基，否则 system YAML 解析失败",
+ "lesson": {"trigger": "准备 BioEmu2 system YAML 时",
+            "symptom": "propagate 连续三次失败，报错指向多余端基",
+            "remedy": "由 CIF 重建成 3-entity YAML 并删掉 OXT 后再提交",
+            "still_unclear": "OXT 之外是否还有其它端基会触发同一错误"},
+ "conditions": {"applies_to": "BioEmu2 propagate 输入准备"},
+ "evidence": [{"source": "record", "experiment_id": "exp-…", "checkpoint_id": "checkpoint-…"}],
+ "confidence": "provisional"}
+```
+
+Three rules are enforced at write time: a remedy, a scope, and **record** evidence. The last one is the
+point — a lesson must have been paid for. Literature cannot supply it, and `validate` warns when no
+cited checkpoint is a `failure`, because a lesson with no cost voucher behind it is hard to trust later.
+
+### Where lessons do and do not belong
+
+| Content | Home |
+|---|---|
+| how to operate this plugin or the agent itself ("run long jobs through `bg_run`") | the skill, or Levin's own Lessons — **not here** |
+| how a protocol or tool behaves in this domain, and what to change next time | `kind: "lesson"` here |
+| what the system under study does | `fact` / `conclusion` / `boundary` |
+
+The test: would this still be true on another machine with another person? Yes and about method →
+lesson here. About the object of study → knowledge. About the agent's own behaviour → Levin's Lessons.
+
+### Promoting a failure into a lesson: `research_knowledge_candidates`
+
+```jsonc
+research_knowledge_candidates({"workspace_dir": "...", "include_promoted": false})
+```
+
+Lists `failure` checkpoints across every record that no lesson cites yet, newest first, with the record
+title, whether that record has a delivered report, and the `lesson_id` where one already cites it. Run
+it when you finish a task or a campaign: failures sit in records as receipts, and most of them should
+stay there — promoting one is a judgement that it will save someone else the same cost.
 
 ## Evidence: measured here, or taken from literature
 

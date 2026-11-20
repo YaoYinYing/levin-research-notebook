@@ -42,10 +42,13 @@ finalize, in that order, and each file is short enough to load when its stage be
 
 `research_knowledge_*` is the **other** family: it records what is now *known*, not what was done.
 Promote a finding into it when it should outlive the record — a measured relationship, a mechanism you
-can defend, the limit where a model stops holding, or the chain connecting them. Four kinds
-(`fact` / `conclusion` / `boundary` / `derivation`) exist because they fail differently, and a hard rule
-per kind is enforced at write time: a boundary without `conditions.fails_when` is refused. Support is
-`record` (measured here) or `external` (literature), and the two are never mixed in the brief.
+can defend, the limit where a model stops holding, the chain connecting them, or what to do differently
+next time. Five kinds exist because they fail differently — `fact` / `conclusion` / `boundary` /
+`derivation` / `lesson` — and a hard rule per kind is enforced at write time: a boundary without
+`conditions.fails_when`, or a lesson without `lesson.remedy`, is refused. Support is `record` (measured
+here) or `external` (literature), and the two are never mixed in the brief. A lesson is operative, not
+epistemic: it must also have been paid for by a local failure, and `research_knowledge_candidates` lists
+the failures you have not promoted yet.
 
 ## Invariants — these override convenience
 

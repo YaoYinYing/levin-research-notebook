@@ -34,6 +34,33 @@ recorded under `0.11.9`, which is the release that shipped it.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-20
+
+Lessons get a home. Failures were recorded as `failure` checkpoints and then died with their record, so
+the next project paid for the same mistake. The other obvious home — Levin's own Lessons — is for how the
+agent works, not for how a protocol behaves in a domain, and putting these there pollutes that memory.
+
+### Added
+- Knowledge:
+  - a fifth kind, `lesson` — operative rather than epistemic: it does not claim what the world is like,
+    it says what to do next time. `lesson.trigger` / `symptom` / `remedy` / `still_unclear`, with
+    `still_unclear` kept visible so a half-fix cannot read as a fix.
+  - `research_knowledge_candidates` lists `failure` checkpoints across every record that no lesson cites
+    yet, newest first, with the record title, whether it has a delivered report, and the `lesson_id`
+    where one already cites it. Promotion becomes a decision instead of a memory test; leaving a failure
+    in its record stays a legitimate choice, because not every failure is a lesson.
+
+### Changed
+- Knowledge:
+  - a lesson is refused at write time without `lesson.remedy` (a symptom with no remedy is a complaint),
+    without `conditions.applies_to` (an unscoped lesson gets applied where it does not hold), and without
+    **record** evidence (a lesson must have been paid for; literature cannot supply the receipt).
+  - `validate` warns when none of a lesson's cited checkpoints is a `failure` — a lesson with no cost
+    voucher behind it is hard to trust later.
+
+### Tests
+- 218 cases (210 + eight for lesson rules, rendering, the cost-voucher warning and the candidate scan).
+
 ## [0.14.0] - 2026-11-20
 
 A knowledge layer. A record says what happened once; it does not say what is now *known*. Findings

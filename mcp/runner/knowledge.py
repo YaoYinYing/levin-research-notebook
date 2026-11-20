@@ -59,8 +59,9 @@ MAX_ENTRIES = 5000
 DEFAULT_TOPIC = 'general'
 TOPIC = re.compile(r'^[a-z0-9][a-z0-9_-]{0,40}$')
 KID = re.compile(r'^kn-[0-9a-f]{32}$')
-KINDS = ('fact', 'conclusion', 'boundary', 'derivation')
-KIND_LABELS = {'fact': '事实', 'conclusion': '结论', 'boundary': '可行边界', 'derivation': '推导过程'}
+KINDS = ('fact', 'conclusion', 'boundary', 'derivation', 'lesson')
+KIND_LABELS = {'fact': '事实', 'conclusion': '结论', 'boundary': '可行边界',
+               'derivation': '推导过程', 'lesson': '经验教训'}
 CONFIDENCE = ('established', 'provisional', 'refuted')
 # How a claim is supported. Derived from evidence, never stored, so it cannot drift.
 BASIS = ('workspace', 'mixed', 'external', 'derived', 'none')
@@ -88,6 +89,19 @@ EVIDENCE_SCHEMA = {
         {'if': {'properties': {'source': {'const': 'external'}}, 'required': ['source']},
          'then': {'required': ['citation'], 'not': {'required': ['experiment_id']}}},
     ],
+}
+# A lesson is operative, not epistemic: it does not claim what the world is like, it says
+# what to do next time. Its failure mode is being unactionable or over-applied, which is
+# why `remedy` is required and why a scope is not optional.
+LESSON_SCHEMA = {
+    'type': ['object', 'null'], 'additionalProperties': False,
+    'properties': {
+        'trigger': {'type': 'string', 'maxLength': 2000},
+        'symptom': {'type': 'string', 'maxLength': 4000},
+        'remedy': {'type': 'string', 'maxLength': 4000},
+        # Naming what is still unsolved keeps a half-fix from reading as a fix.
+        'still_unclear': {'type': 'string', 'maxLength': 4000},
+    },
 }
 STEP_SCHEMA = {
     'type': 'object', 'additionalProperties': False, 'required': ['claim', 'from'],
@@ -117,6 +131,7 @@ ENTRY_SCHEMA = {
         'statement': {'type': 'string', 'minLength': 1, 'maxLength': 4000},
         'detail': {'type': 'string', 'maxLength': 20000},
         'conditions': CONDITIONS_SCHEMA,
+        'lesson': LESSON_SCHEMA,
         'evidence': {'type': 'array', 'maxItems': 200, 'items': EVIDENCE_SCHEMA},
         'derived_from': {'type': 'array', 'maxItems': 50,
                          'items': {'type': 'string', 'pattern': '^kn-[0-9a-f]{32}$'}},
@@ -383,6 +398,17 @@ class Knowledge:
             hard.append('a boundary without conditions.fails_when is just a fact; state where it stops holding')
         if kind == 'derivation' and len(entry['steps']) < 2:
             hard.append('a derivation needs at least two ordered steps; one step is a restatement')
+        if kind == 'lesson':
+            block = entry.get('lesson') or {}
+            if len(str(block.get('remedy') or '').strip()) < 12:
+                hard.append('a lesson needs lesson.remedy: what to do instead, concretely. '
+                            'A symptom with no remedy is a complaint')
+            if not conditions['applies_to'].strip():
+                hard.append('a lesson needs conditions.applies_to: an unscoped lesson gets applied '
+                            'where it does not hold')
+            if not any(item['source'] == 'record' for item in evidence):
+                hard.append('a lesson must have been paid for: cite the record where it bit you. '
+                            'A lesson with no local failure behind it is advice, not experience')
         if kind in ('conclusion', 'boundary') and not conditions['applies_to']:
             soft.append('state conditions.applies_to: a conclusion with no stated scope reads as universal')
         if basis == 'external' and entry['confidence'] == 'established':
@@ -391,10 +417,24 @@ class Knowledge:
         if entry['confidence'] == 'established' and len(evidence) < 2 and not entry['derived_from']:
             if cache is None or not self._supported_by_finalized(entry, cache):
                 soft.append('established on a single piece of evidence is usually provisional')
+        if kind == 'lesson' and cache is not None and not self._has_failure_evidence(entry, cache):
+            soft.append('no cited checkpoint is a failure; a lesson usually carries a cost voucher, '
+                        'and one without it is hard to trust later')
         if kind == 'boundary' and basis == 'external':
             soft.append('a boundary derived from literature alone still needs a local record before anyone '
                         'relies on it for this system')
         return hard, soft
+
+    def _has_failure_evidence(self, entry, cache):
+        """True when some cited checkpoint is a failure — the record's own cost voucher."""
+        for item in entry['evidence']:
+            if item.get('source') != 'record' or not item.get('checkpoint_id'):
+                continue
+            manifest = self._manifest(item.get('experiment_id', ''), cache)
+            for checkpoint in (manifest or {}).get('checkpoints') or []:
+                if checkpoint['id'] == item['checkpoint_id'] and checkpoint.get('kind') == 'failure':
+                    return True
+        return False
 
     def _supported_by_finalized(self, entry, cache):
         for item in entry['evidence']:
@@ -416,7 +456,7 @@ class Knowledge:
             raise NotebookError('entry must be an object')
         allowed = {'id', 'topic', 'kind', 'statement', 'detail', 'conditions', 'evidence',
                    'derived_from', 'steps', 'confidence', 'tags', 'supersedes', 'refuted_by',
-                   'retired', 'retire_reason', 'agent_id'}
+                   'retired', 'retire_reason', 'lesson', 'agent_id'}
         unknown = set(payload) - allowed
         if unknown:
             raise NotebookError('Unknown knowledge fields: ' + ', '.join(sorted(unknown)))
@@ -475,6 +515,21 @@ class Knowledge:
                 'holds_when': [str(x).strip() for x in (conditions.get('holds_when') or []) if str(x).strip()],
                 'fails_when': [str(x).strip() for x in (conditions.get('fails_when') or []) if str(x).strip()],
             }
+
+            lesson_block = payload.get('lesson', (existing or {}).get('lesson'))
+            if lesson_block is not None:
+                if not isinstance(lesson_block, dict):
+                    raise NotebookError('lesson must be an object with trigger / symptom / remedy / still_unclear')
+                unknown_lesson = set(lesson_block) - {'trigger', 'symptom', 'remedy', 'still_unclear'}
+                if unknown_lesson:
+                    raise NotebookError('Unknown lesson fields: ' + ', '.join(sorted(unknown_lesson)))
+                lesson_block = {key: str(lesson_block.get(key) or '').strip()
+                                for key in ('trigger', 'symptom', 'remedy', 'still_unclear')}
+                if not any(lesson_block.values()):
+                    lesson_block = None
+            if kind == 'lesson' and lesson_block is None:
+                raise NotebookError('kind=lesson needs a lesson block: at least {remedy}. '
+                                    'Record what to do differently next time, not just what went wrong')
 
             evidence = payload.get('evidence', (existing or {}).get('evidence') or [])
             if not isinstance(evidence, list):
@@ -536,6 +591,7 @@ class Knowledge:
                 'statement': statement.strip(),
                 'detail': (payload.get('detail', (existing or {}).get('detail') or '')).strip(),
                 'conditions': normalised_conditions,
+                'lesson': lesson_block if kind == 'lesson' else None,
                 'evidence': evidence,
                 'derived_from': list(derived_from),
                 'steps': steps,
@@ -671,6 +727,53 @@ class Knowledge:
                 'kinds': {k: sum(1 for e in live if e['kind'] == k) for k in KINDS},
                 'basis': {b: sum(1 for e in live if basis_of(e) == b) for b in BASIS}}
 
+    def candidates(self, include_promoted=False, limit=100):
+        """Failure checkpoints that no lesson cites yet.
+
+        A lesson has to be paid for, and the failures sitting in records are the receipts.
+        Listing them makes promotion a decision rather than a memory test — and leaving one
+        in its record stays a legitimate choice, because not every failure is a lesson.
+        """
+        base = self.load()
+        promoted = {}
+        for entry in base['entries']:
+            if entry['kind'] != 'lesson':
+                continue
+            for item in entry['evidence']:
+                if item.get('checkpoint_id'):
+                    promoted[(item.get('experiment_id'), item['checkpoint_id'])] = entry['id']
+        rows = []
+        for path in sorted((self.notebook / 'experiments').glob('exp-*/manifest.json')):
+            eid = path.parent.name
+            try:
+                manifest = json.loads(path.read_text(encoding='utf-8'))
+            except (OSError, json.JSONDecodeError):
+                continue
+            delivered = any((r or {}).get('render_state') == 'success'
+                            for r in manifest.get('reports') or [])
+            for checkpoint in manifest.get('checkpoints') or []:
+                if checkpoint.get('kind') != 'failure' or checkpoint.get('excluded'):
+                    continue
+                lesson_id = promoted.get((eid, checkpoint['id']))
+                if lesson_id and not include_promoted:
+                    continue
+                rows.append({
+                    'experiment_id': eid,
+                    'record_title': manifest.get('title', ''),
+                    'record_finalized': delivered,
+                    'checkpoint_id': checkpoint['id'],
+                    'title': checkpoint.get('title') or '',
+                    'text': (checkpoint.get('text') or '')[:300],
+                    'happened_at': checkpoint.get('created_at', ''),
+                    'promoted': bool(lesson_id),
+                    'lesson_id': lesson_id,
+                })
+        rows.sort(key=lambda row: row['happened_at'], reverse=True)
+        return {'candidates': rows[:limit], 'total': len(rows), 'returned': len(rows[:limit]),
+                'already_promoted': len(promoted),
+                'note': 'Promote one with research_knowledge_upsert(kind="lesson") citing its '
+                        'checkpoint; leaving the rest in their records is a valid choice.'}
+
     # ---------- check ----------
     def validate(self):
         """Re-read every citation, in every topic. A base that is not re-read quietly rots."""
@@ -772,7 +875,8 @@ class Knowledge:
         lines = ['# 知识库', '',
                  f"***{base['updated_at'][:19].replace('T', ' ')}***", '',
                  (f"可用条目 {len(live)}（事实 {counts['fact']} / 结论 {counts['conclusion']} / "
-                  f"可行边界 {counts['boundary']} / 推导 {counts['derivation']}）"
+                  f"可行边界 {counts['boundary']} / 推导 {counts['derivation']} / "
+                  f"经验教训 {counts['lesson']}）"
                   + (f"，已搁置 {len(retired)}" if retired else '')
                   + (f"，其中外部依据 {len(priors)} 条" if priors else '')), '']
         if not live:
@@ -816,6 +920,16 @@ class Knowledge:
                         if conditions.get('fails_when'):
                             # The limit is the point of a boundary, so it is never omitted.
                             lines.append('- 失效条件：' + '；'.join(conditions['fails_when']))
+                        block = entry.get('lesson') or {}
+                        if block:
+                            if block.get('trigger'):
+                                lines.append(f"- 触发情境：{block['trigger']}")
+                            if block.get('symptom'):
+                                lines.append(f"- 现象：{block['symptom']}")
+                            if block.get('remedy'):
+                                lines.append(f"- 改法：{block['remedy']}")
+                            if block.get('still_unclear'):
+                                lines.append(f"- 仍未解决：{block['still_unclear']}")
                         if entry.get('detail'):
                             lines += ['', entry['detail'], '']
                         if entry['steps']:
