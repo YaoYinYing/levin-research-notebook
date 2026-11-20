@@ -22,6 +22,7 @@ address a Remote job workspace for notebook writes (register HPC data as externa
 | Citing papers, BibTeX, reference list | [bibliography](references/bibliography.md) |
 | validate, finalize, space accounting, pruning | [finalize](references/finalize.md) |
 | Handing figure work to a worker | [visualization brief](references/visualization-agent.md) |
+| Reusable facts, conclusions, boundaries, derivations across records | [knowledge](references/knowledge.md) |
 | Limits, failure modes, recovery | [limits](references/limits.md) |
 | Exact argument shapes | [calls.json](examples/calls.json) |
 
@@ -39,6 +40,13 @@ finalize, in that order, and each file is short enough to load when its stage be
 5. `research_record_finalize` — sources, PDF, space accounting; then `prune_reports` / 
    `prune_revisions` if needed.
 
+`research_knowledge_*` is the **other** family: it records what is now *known*, not what was done.
+Promote a finding into it when it should outlive the record — a measured relationship, a mechanism you
+can defend, the limit where a model stops holding, or the chain connecting them. Four kinds
+(`fact` / `conclusion` / `boundary` / `derivation`) exist because they fail differently, and a hard rule
+per kind is enforced at write time: a boundary without `conditions.fails_when` is refused. Support is
+`record` (measured here) or `external` (literature), and the two are never mixed in the brief.
+
 ## Invariants — these override convenience
 
 - Never invent a result, number, citation or figure. A conclusion needs evidence ids; a failure
@@ -52,6 +60,9 @@ finalize, in that order, and each file is short enough to load when its stage be
 - A regenerated figure is a normal event: re-register the same `(location, role)` and it records
   `revision N+1` with a warning, while changed `raw`/`input` evidence stays an error. To retire an
   obsolete artifact, register its replacement with `supersedes`, or pass `retired: true`.
+- Knowledge is not a scrapbook: an entry needs support that resolves to a real record, and a
+  conclusion needs a stated scope. Prefer `boundary` when what you actually learned is where
+  the claim stops holding.
 - The record is about the experiment, not about the tooling. If the session turns to debugging the
   notebook itself, pause recording (`research_record_suspend`), and set any entry that already
   slipped in aside with `research_record_exclude` — never by editing or deleting history.

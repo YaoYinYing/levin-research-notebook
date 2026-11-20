@@ -34,6 +34,47 @@ recorded under `0.11.9`, which is the release that shipped it.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-20
+
+A knowledge layer. A record says what happened once; it does not say what is now *known*. Findings
+worth reusing outside the record that produced them — a measured relationship, a mechanism, the limit
+where a model stops holding, the chain between them — previously survived only as prose inside one
+record, and the next project paid for the same dead end again.
+
+### Added
+- Knowledge:
+  - `levin_knowledge/` beside `levin_notebook/`, partitioned by topic:
+    `topics/<topic>/index.json` holds the entries, `catalog.json` and `brief.md` are rebuilt from them
+    on every write. A hand-maintained index is the classic way a knowledge base starts lying.
+  - four kinds, chosen by **how they fail** rather than by content: `fact` (measured here),
+    `conclusion` (follows from facts), `boundary` (where a conclusion stops holding), `derivation`
+    (the chain from support to claim, as ordered steps).
+  - typed conditions: `applies_to` / `holds_when` / `fails_when`, so a claim carries its own scope.
+  - evidence declares `source`: `record` (measured in this workspace) or `external` (literature).
+    `basis` is derived from that — `workspace` / `mixed` / `external` / `derived` / `none` — never
+    stored, so it cannot drift, and the brief renders priors in a separate
+    **先验假设（外部依据，本工作区未验证）** block rather than beside results.
+- Tools:
+  - `research_knowledge_upsert`, `research_knowledge_query`, `research_knowledge_validate`,
+    `research_knowledge_export`. Fifteen `research_*` tools in total.
+
+### Changed
+- Knowledge:
+  - type rules block at write time instead of storing a mislabeled entry and flagging it: a `boundary`
+    without `conditions.fails_when` is a fact wearing a cautionary label, a `fact` cannot rest on
+    literature, a `derivation` needs two steps, `confidence: refuted` needs `refuted_by`, and setting
+    an entry aside needs `retire_reason`.
+  - `validate` re-reads every citation and reports support whose checkpoint was **corrected** or
+    **excluded after the entry was written** — the failure that silently rots a knowledge base while
+    it still looks pristine — plus broken `derived_from` targets, cycles, asymmetric supersede links
+    and a derived file that no longer matches the entries.
+  - an id is global and a topic is a shelf: updating by `id` keeps the entry where it lives, and
+    `derived_from` may cross topics.
+
+### Tests
+- 210 cases (193 + seventeen for typing rules, provenance, rot detection, topic layout, priors and
+  the read paths).
+
 ## [0.13.1] - 2026-11-13
 
 An independent acceptance round on 0.13.0 passed all four scenarios (pause window in 记录范围,

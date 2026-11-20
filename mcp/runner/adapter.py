@@ -68,3 +68,36 @@ def research_record_prune_reports(context,arguments): return invoke('prune_repor
 def research_record_prune_revisions(context,arguments): return invoke('prune_revisions',arguments)
 def research_record_suspend(context,arguments): return invoke('suspend',arguments)
 def research_record_exclude(context,arguments): return invoke('exclude',arguments)
+
+def invoke_knowledge(operation, arguments):
+    """Knowledge lives beside the notebook and shares its workspace, so it needs its own
+    entry point rather than another `if` inside invoke(): the two classes have different
+    invariants and mixing them invites calling one with the other's ids."""
+    a=dict(arguments)
+    preview=a.pop('preview',False)
+    workspace=a.pop('workspace_dir')
+    if preview:
+        return {'ok':True,'preview':True,'operation':operation,'note':'Schema-valid plan only; no knowledge entry read or written. Domain execution is separately tested.'}
+    try:
+        from notebook import NotebookError
+        from knowledge import Knowledge
+        k=Knowledge(workspace)
+        if operation=='knowledge_upsert':
+            return k.upsert(a.pop('entry'), a.pop('topic',None), a.pop('request_id',None))
+        if operation=='knowledge_query':
+            return k.query(a.pop('query',''), a.pop('kind',None), a.pop('tag',None),
+                           a.pop('confidence',None), a.pop('basis',None), a.pop('topic',None),
+                           a.pop('include_retired',False), a.pop('limit',50), a.pop('offset',0))
+        if operation=='knowledge_validate': return k.validate()
+        if operation=='knowledge_export': return k.export()
+        raise NotebookError('Unknown knowledge operation')
+    except PluginError:
+        raise
+    except Exception as e:
+        raise PluginError(str(e),code='knowledge_validation_error',stage=operation) from e
+
+
+def research_knowledge_upsert(context,arguments): return invoke_knowledge('knowledge_upsert',arguments)
+def research_knowledge_query(context,arguments): return invoke_knowledge('knowledge_query',arguments)
+def research_knowledge_validate(context,arguments): return invoke_knowledge('knowledge_validate',arguments)
+def research_knowledge_export(context,arguments): return invoke_knowledge('knowledge_export',arguments)

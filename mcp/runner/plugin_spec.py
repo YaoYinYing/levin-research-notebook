@@ -1,7 +1,7 @@
 from levin_plugin_sdk import Plugin, PythonRuntime, RuntimeCommand
 
 plugin = Plugin(
-    id='levin-research-notebook',version='0.13.1',display_name='Levin Research Notebook',
+    id='levin-research-notebook',version='0.14.0',display_name='Levin Research Notebook',
     description='Filesystem research evidence, experiment provenance and editable scientific reports.',
     server_name='runner',runtime=PythonRuntime(id='runner',python='3.11',project='./mcp/runner',cache_key='runner',
         packages=('jsonschema==4.23.0','filelock==3.16.1','reportlab==4.2.5','matplotlib==3.9.4','bibtexparser==2.1.0'),
@@ -59,3 +59,46 @@ for suffix,description,schema,fixture,mutation in DEFS:
         input_schema=schema,success_fixture={'workspace_dir':'__LEVIN_CONTRACT_WORKSPACE__',**fixture},timeout_ms=60000 if suffix=='finalize' else 30000,
         runtime_contract={'effect':'file_mutation' if mutation else 'read','scope':'workspace','parallelism':'parallel','artifactPolicy':'none','durationClass':'short','contextPolicy':'inline','permissionClass':'workspace' if mutation else 'none','resumePolicy':'none','cancellable':'best_effort','modelVisible':'visible','costClass':'low'},
         foreground_reason='Bounded local metadata transaction; no subprocess/network. Maximum 2 MB manifest, 64 MiB hashing and 200k report characters/20 figures.' if mutation else None)
+
+# ---- knowledge: a second family, because it answers a different question ----
+# A record says what happened once. Knowledge says what is now known, under which
+# conditions, and how it was derived — and it outlives the record it came from.
+knowledge_conditions=obj({'applies_to':{'type':'string','maxLength':2000,'description':'The system or context this claim is about.'},
+    'holds_when':{'type':'array','maxItems':30,'items':{'type':'string','maxLength':1000},'description':'Assumptions the claim depends on.'},
+    'fails_when':{'type':'array','maxItems':30,'items':{'type':'string','maxLength':1000},'description':'Where it stops holding. Required for kind=boundary: a boundary without its limit is just a fact.'}})
+knowledge_evidence={'type':'array','maxItems':200,'items':{'type':'object','additionalProperties':False,'required':['source'],
+    'properties':{'source':{'enum':['record','external'],'description':'record = measured in this workspace (needs experiment_id); external = literature or prior (needs citation, must not name an experiment).'},
+                  'experiment_id':{'type':'string','pattern':'^exp-[0-9a-f]{32}$'},
+                  'checkpoint_id':{'type':'string','maxLength':120},'artifact_id':{'type':'string','maxLength':120},
+                  'citation':{'type':'string','maxLength':1000},'note':{'type':'string','maxLength':500}}}}
+knowledge_steps={'type':'array','maxItems':50,'items':{'type':'object','additionalProperties':False,'required':['claim','from'],
+    'properties':{'claim':{'type':'string','minLength':1,'maxLength':4000},
+                  'from':{'type':'array','minItems':1,'maxItems':20,'items':{'type':'string','maxLength':140},
+                          'description':'What this step rests on: a knowledge id, a checkpoint/artifact id, or the inference rule.'}}}}
+knowledge_entry=obj({'agent_id':agent,'id':{'type':'string','pattern':'^kn-[0-9a-f]{32}$','description':'Omit to create; pass to update in place.'},
+    'topic':{'type':'string','pattern':'^[a-z0-9][a-z0-9_-]{0,40}$','description':'Shelf for a new entry, e.g. structural. Default general; an existing id keeps its own topic.'},
+    'kind':{'enum':['fact','conclusion','boundary','derivation'],'description':'fact = measured here; conclusion = follows from facts; boundary = where a conclusion stops holding; derivation = the chain from support to claim.'},
+    'statement':{'type':'string','minLength':12,'maxLength':4000,'description':'The claim itself, one sentence.'},
+    'detail':{'type':'string','maxLength':20000},'conditions':knowledge_conditions,
+    'evidence':knowledge_evidence,'derived_from':{'type':'array','maxItems':50,'items':{'type':'string','pattern':'^kn-[0-9a-f]{32}$'}},
+    'steps':knowledge_steps,'confidence':{'enum':['established','provisional','refuted']},
+    'refuted_by':{'type':'string','maxLength':4000,'description':'Required when confidence=refuted: what disproved it. A refutation is the most reusable thing in a knowledge base.'},
+    'tags':{'type':'array','maxItems':30,'items':{'type':'string','maxLength':60}},
+    'supersedes':{'type':'string','pattern':'^kn-[0-9a-f]{32}$'},'retired':{'type':'boolean'},
+    'retire_reason':{'type':'string','maxLength':2000,'description':'Required when retiring: why the entry is no longer authoritative.'}},
+    ('agent_id','kind','statement'))
+KDEFS=[
+ ('upsert','Record one unit of knowledge: a fact measured here, a conclusion drawn from facts, a boundary saying where it stops holding, or a derivation showing the chain. Provenance is resolved at write time and a claim that no record supports is refused.',obj({**common,'entry':knowledge_entry,'topic':{'type':'string','pattern':'^[a-z0-9][a-z0-9_-]{0,40}$'},'request_id':{'type':'string','pattern':'^[A-Za-z0-9][A-Za-z0-9_.-]{0,100}$'}},('workspace_dir','entry')),{'entry':{'agent_id':'contract','kind':'conclusion','statement':'Synthetic contract entry with no claims','confidence':'provisional'},'preview':True},True),
+ ('query','Search the knowledge base across every topic: statement, conditions, derivation steps, tags, cited experiments and citations; whitespace-separated terms are combined with AND. Returns basis (workspace / external / derived) so a prior is never mistaken for a result.',obj({**common,'query':{'type':'string','maxLength':300},'topic':{'type':'string','pattern':'^[a-z0-9][a-z0-9_-]{0,40}$'},
+    'kind':{'enum':['fact','conclusion','boundary','derivation']},'tag':{'type':'string','maxLength':60},
+    'confidence':{'enum':['established','provisional','refuted']},
+    'basis':{'enum':['workspace','mixed','external','derived','none'],'description':'workspace = every citation is a local record; external = literature only; derived = follows from other entries.'},
+    'include_retired':{'type':'boolean','default':False},'limit':{'type':'integer','minimum':1,'maximum':1000},'offset':{'type':'integer','minimum':0}},('workspace_dir',)),{'query':'interface','preview':True},False),
+ ('validate','Re-read every citation in the knowledge base: report support whose experiment, checkpoint or artifact has since been deleted, corrected or excluded, plus broken derivation chains, asymmetric supersede links and type rules. This is what keeps the base from rotting silently.',obj({**common},('workspace_dir',)),{},False),
+ ('export','Rebuild catalog.json and the human-readable brief.md from the topic indexes. The two are derived files, so this repairs them after a hand edit or a crash instead of trusting them.',obj({**common},('workspace_dir',)),{},True),
+]
+for suffix,description,schema,fixture,mutation in KDEFS:
+    plugin.tool('research_knowledge_'+suffix,description=description,handler='adapter:research_knowledge_'+suffix,
+        input_schema=schema,success_fixture={'workspace_dir':'__LEVIN_CONTRACT_WORKSPACE__',**fixture},timeout_ms=60000,
+        runtime_contract={'effect':'file_mutation' if mutation else 'read','scope':'workspace','parallelism':'parallel','artifactPolicy':'none','durationClass':'short','contextPolicy':'inline','permissionClass':'workspace' if mutation else 'none','resumePolicy':'none','cancellable':'best_effort','modelVisible':'visible','costClass':'low'},
+        foreground_reason='Bounded local metadata transaction; no subprocess/network. Filesystem knowledge base under levin_knowledge/.' if mutation else None)
