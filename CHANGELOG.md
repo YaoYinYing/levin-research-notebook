@@ -34,6 +34,28 @@ recorded under `0.11.9`, which is the release that shipped it.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-20
+
+A record could say which software and which host produced it, but not which **skills** did. Skills get
+updated, split and retired, so "how this was made" was not reproducible from the record alone — and a
+reviewer could not tell whether a method came from a portable skill or a project-local one.
+
+### Added
+- Records:
+  - `finalize(skills=[{name, scope?, version?, note?}])`. `scope` is `bundled` / `global` / `project` /
+    `plugin`, so a reader can see whether the method transfers; `version` pins what was actually used;
+    duplicates are collapsed.
+- Report:
+  - §4 材料 gains a 使用的技能 row, plus one bullet per skill that carries a note.
+
+### Changed
+- Records:
+  - `skills` follows the same omit-means-keep rule as every other finalize field: a later finalize that
+    only adds artifacts does not erase them.
+
+### Tests
+- 222 cases (219 + rendering, omit-means-keep, and scope validation).
+
 ## [0.15.1] - 2026-11-20
 
 ### Fixed

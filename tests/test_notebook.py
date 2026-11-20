@@ -1124,6 +1124,38 @@ class RecordModelTests(unittest.TestCase):
         rows, _errors = self.n.index('radius_of_gyration')
         self.assertEqual([row['experiment_id'] for row in rows], [self.eid])
 
+    def test_skills_used_are_recorded_and_rendered_in_materials(self):
+        # Skills get updated and retired, so "how this was made" is not reproducible
+        # unless the record says which skill, at which version.
+        self.n.checkpoint(self.eid, 'a', 'method', 'Rendered the complex with a skill')
+        self.n.finalize(self.eid, 'success', 'Structure looks right', 'Single conformer',
+                        {'beneficial': False, 'reason': 'none', 'figure_ids': [], 'reviewed_by': 'test'},
+                        skills=[{'name': 'pymol-visualization', 'scope': 'global', 'version': '1.2',
+                                 'note': 'ray-traced the interface view'}], request_id='sk1')
+        record = (self.directory / 'record.md').read_text(encoding='utf-8')
+        self.assertIn('使用的技能', record)
+        self.assertIn('pymol-visualization 1.2（global）', record)
+        self.assertIn('ray-traced the interface view', record)
+
+    def test_omitting_skills_on_a_later_finalize_keeps_them(self):
+        self.n.checkpoint(self.eid, 'a', 'method', 'Ran the analysis')
+        self.n.finalize(self.eid, 'success', 'First reading', 'Single conformer',
+                        {'beneficial': False, 'reason': 'none', 'figure_ids': [], 'reviewed_by': 'test'},
+                        skills=[{'name': 'levin-labnote', 'scope': 'plugin'}], request_id='sk2')
+        self.n.checkpoint(self.eid, 'a', 'observation', 'Second look')
+        self.n.finalize(self.eid, 'success', 'Second reading', 'Single conformer',
+                        {'beneficial': False, 'reason': 'none', 'figure_ids': [], 'reviewed_by': 'test'},
+                        request_id='sk3')
+        self.assertEqual([s['name'] for s in self.n._load(self.eid)['skills']], ['levin-labnote'])
+
+    def test_an_unknown_skill_scope_is_rejected(self):
+        self.n.checkpoint(self.eid, 'a', 'method', 'Ran the analysis')
+        with self.assertRaises(Exception) as caught:
+            self.n.finalize(self.eid, 'success', 'Reading', 'Limit',
+                            {'beneficial': False, 'reason': 'none', 'figure_ids': [], 'reviewed_by': 't'},
+                            skills=[{'name': 'x', 'scope': 'wherever'}], request_id='sk4')
+        self.assertIn('scope', str(caught.exception).lower())
+
     def test_a_pause_stops_the_recorder_recording_itself(self):
         # Debugging the notebook tooling inside the same session used to write the debugging
         # process into the experiment, which then documented the recorder, not the science.

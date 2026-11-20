@@ -175,6 +175,9 @@ SCHEMA = {
    'properties':{'id':{'type':'string'},'opened_at':{'type':'string'},'closed_at':{'type':['string','null']},'agent_id':{'type':'string'},'reason':{'type':'string','minLength':1}}}},
  'visualization':{'type':['object','null'],'additionalProperties':False,'required':['beneficial','reason','figure_ids','reviewed_by'], 'properties':{'beneficial':{'type':'boolean'},'reason':{'type':'string','minLength':1},'figure_ids':{'type':'array','items':{'type':'string'}},'reviewed_by':{'type':'string','minLength':1}}},
  'reports':{'type':'array','items':{'type':'object'}},'requests':{'type':'object'},
+ # A record produced with a skill should say which one, at which version: skills are
+ # updated and retired, so 'how this was made' is not reproducible without it.
+ 'skills':{'type':'array','maxItems':50,'items':{'type':'object','additionalProperties':False,'required':['name'],'properties':{'name':{'type':'string','minLength':1,'maxLength':120},'scope':{'enum':['bundled','global','project','plugin']},'version':{'type':'string','maxLength':60},'note':{'type':'string','maxLength':500}}}},
  'usage_at_init':{'type':'object'},'usage_at_finalize':{'type':'object'},'workspace_dir':{'type':'string'},
  'purpose':{'type':'string'},'environment_location':{'type':'string'},
  'record_type':{'enum':['experiment','analysis','literature_review']},
@@ -330,7 +333,7 @@ class Notebook:
                 resumed=True
             else:
                 eid=uid('exp'); t=now()
-                m=dict(schema_version=1,experiment_id=eid,task_id=task_id,created_at=t,updated_at=t,revision=1,title=title,objective=objective,hypothesis=hypothesis,execution_status='wip',interpretation='',limitations='',agents=[agent_id],checkpoints=[],artifacts=[],runs=[],visualization=None,reports=[],requests={},retention=retention,usage_at_init=baseline,expected_result=expected_result,lessons=[],plans=[],workspace_dir=str(self.workspace),purpose=purpose,implementer=implementer,environment_location=environment_location,strategy=[],method_plan=[],materials={},results={},footnotes=[],remote_space=[],record_type=record_type,search_strategy=None,references=[],synthesis='',citations=[],extra_sections=[],reference_sections=[],quantities=[],derived_from=list(parents))
+                m=dict(schema_version=1,experiment_id=eid,task_id=task_id,created_at=t,updated_at=t,revision=1,title=title,objective=objective,hypothesis=hypothesis,execution_status='wip',interpretation='',limitations='',agents=[agent_id],checkpoints=[],artifacts=[],runs=[],visualization=None,reports=[],requests={},retention=retention,usage_at_init=baseline,expected_result=expected_result,lessons=[],plans=[],workspace_dir=str(self.workspace),purpose=purpose,implementer=implementer,environment_location=environment_location,strategy=[],method_plan=[],materials={},results={},footnotes=[],remote_space=[],record_type=record_type,search_strategy=None,references=[],synthesis='',citations=[],extra_sections=[],reference_sections=[],quantities=[],derived_from=list(parents),skills=[])
                 self._dir(eid).mkdir(parents=True,exist_ok=False)
                 for n in ('scripts','figures','data','reports','revisions'): (self._dir(eid)/n).mkdir()
                 self._atomic(self._dir(eid)/'notes.md','# Human notes\n\nEditable notes; record.md is a generated view. Capture scientific claims with checkpoint evidence IDs.\n')
@@ -831,7 +834,7 @@ class Notebook:
             return {'ok':True,'experiment_id':eid,**result}
         except Exception as e: return {'ok':True,'experiment_id':eid,'valid':False,'errors':[str(e)],'warnings':[]}
 
-    def finalize(self,eid,execution_status,interpretation,limitations,visualization,request_id=None,lessons=None,plans=None,strategy=None,method_plan=None,materials=None,results=None,footnotes=None,remote_space=None,purpose='',environment_location='',search_strategy=None,references=None,synthesis='',citations=None,extra_sections=None,record_type=None,bibtex=None,bibtex_path=None,reference_sections=None,quantities=None,font_profile=None):
+    def finalize(self,eid,execution_status,interpretation,limitations,visualization,request_id=None,lessons=None,plans=None,strategy=None,method_plan=None,materials=None,results=None,footnotes=None,remote_space=None,purpose='',environment_location='',search_strategy=None,references=None,synthesis='',citations=None,extra_sections=None,record_type=None,bibtex=None,bibtex_path=None,reference_sections=None,quantities=None,font_profile=None,skills=None):
         # None means the caller omitted the field (keep what is stored); an explicit empty
         # list is a real request to clear it. Without this distinction a finalize that only
         # adds artifacts silently wiped lessons/plans/results in a real campaign.
@@ -840,7 +843,7 @@ class Notebook:
                    ('materials',materials),('results',results),('footnotes',footnotes),
                    ('remote_space',remote_space),('references',references),('citations',citations),
                    ('extra_sections',extra_sections),('reference_sections',reference_sections),
-                   ('quantities',quantities))}
+                   ('quantities',quantities),('skills',skills))}
         lessons=() if lessons is None else lessons
         plans=() if plans is None else plans
         strategy=() if strategy is None else strategy
@@ -852,6 +855,7 @@ class Notebook:
         extra_sections=() if extra_sections is None else extra_sections
         reference_sections=() if reference_sections is None else reference_sections
         quantities=() if quantities is None else quantities
+        skills=() if skills is None else skills
         text(interpretation,'interpretation'); text(limitations,'limitations')
         for item in list(lessons)+list(plans): text(item,'lessons/plans entry')
         for entry in strategy:
@@ -908,6 +912,16 @@ class Notebook:
             qty.append({k:entry[k] for k in ('name','value','unit','dimension','unit_acknowledged',
                                              'uncertainty','uncertainty_unit','note','artifact_id','replica')
                         if k in entry})
+        skill_list=[]
+        for entry in skills:
+            if not isinstance(entry,dict):
+                raise NotebookError('each skill must be an object with name (optional scope/version/note)')
+            unknown=set(entry)-{'name','scope','version','note'}
+            if unknown: raise NotebookError(f"skill accepts name, scope, version, note; got {sorted(unknown)}")
+            built={'name':text(entry.get('name',''),'skill.name',True,limit=120).strip()}
+            for key in ('scope','version','note'):
+                if entry.get(key): built[key]=str(entry[key]).strip()
+            if built not in skill_list: skill_list.append(built)
         note_text=str(synthesis) if synthesis else ''
         if note_text: text(note_text,'synthesis')
         if search_strategy is not None and not isinstance(search_strategy,dict): raise NotebookError('search_strategy must be an object')
@@ -915,7 +929,7 @@ class Notebook:
                      search_strategy=search_strategy or {},references=list(references),synthesis=note_text,
                      bibtex_source=bib_source, bibtex_warnings=bib_warnings,
                      citations=list(citations),extra_sections=list(extra_sections),record_type=record_type,
-                     reference_sections=ref_sections,quantities=qty,font_profile=font_profile)
+                     reference_sections=ref_sections,quantities=qty,font_profile=font_profile,skills=skill_list)
         def change(m):
             # Scalar fields are always replaced (they are required or additive); list- and
             # dict-valued fields only when the caller actually passed them.
@@ -940,6 +954,7 @@ class Notebook:
             if provided['citations']: m['citations']=list(citations)
             if provided['reference_sections']: m['reference_sections']=ref_sections
             if provided['quantities']: m['quantities']=qty
+            if provided['skills']: m['skills']=skill_list
             if font_profile: m['font_profile']=font_profile
             if provided['extra_sections']: m['extra_sections']=list(extra_sections)
             if note_text: m['synthesis']=note_text
@@ -1312,6 +1327,13 @@ class Notebook:
                 entry=f'{name} {version}'
                 if entry not in software: software.append(entry)
         out.append(f"| 软件与版本 | {Notebook._cell(', '.join(software) or '未记录')} |")
+        if m.get('skills'):
+            labels=[]
+            for item in m['skills']:
+                label=item['name']+(' '+item['version'] if item.get('version') else '')
+                if item.get('scope'): label+='（'+item['scope']+'）'
+                labels.append(label)
+            out.append(f"| 使用的技能 | {Notebook._cell(', '.join(labels))} |")
         # Parameters belong to the run that used them, and the appendix prints each run's
         # invocation verbatim. A 600-character JSON blob inside a table cell was unreadable
         # and, worse, unverifiable: it looked authoritative while being truncated.
@@ -1330,6 +1352,8 @@ class Notebook:
         if len(datasets)>3:
             out += ['**原始与输入工件**（完整路径与校验和见附录）','']
             out += [f"- `{a['id']}`（{a['role']}）：`{a['location']}`" for a in datasets]+['']
+        for item in m.get('skills') or []:
+            if item.get('note'): out.append(f"- 技能 `{item['name']}`：{item['note']}")
         for entry in ((m.get('materials') or {}).get('datasets') or []): out.append(f'- {entry}')
         return out
 
