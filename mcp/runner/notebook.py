@@ -1170,6 +1170,124 @@ class Notebook:
                     'reason':reason.strip(),'count':len(changed)}
         return self.mutate(eid,None,dict(op='exclude',targets=list(targets),reason=reason,restore=restore),change)
 
+    def audit(self, include_knowledge=True):
+        """Post-hoc audit of every record, plus drift against the knowledge base.
+
+        `validate` answers "may I finalize this record?". This answers a different and
+        later question: "is what this workspace claims still supported?" It is deliberately
+        deterministic — checksum, cross-reference and consistency checks only. Whether a
+        conclusion *follows* from its evidence is judgement, and belongs to a separate
+        reviewer, not to code that would then be grading itself.
+        """
+        findings = []
+        def note(severity, code, subject, message):
+            findings.append({'severity': severity, 'code': code, 'subject': subject, 'message': message})
+
+        paths = sorted((self.root / 'experiments').glob('exp-*/manifest.json'))
+        if len(paths) > 10000:
+            raise NotebookError('Audit exceeds 10000 experiments; audit a subdirectory instead')
+        records = {}
+        for path in paths:
+            eid = path.parent.name
+            try:
+                manifest = json.loads(path.read_text(encoding='utf-8'))
+            except (OSError, json.JSONDecodeError) as error:
+                note('error', 'record_unreadable', eid, f'manifest cannot be read: {error}')
+                continue
+            records[eid] = manifest
+            verdict = self.validate_manifest(manifest)
+            for message in verdict['errors']:
+                note('error', 'record_invalid', eid, message)
+
+            checkpoints = [c for c in manifest.get('checkpoints') or [] if not c.get('excluded')]
+            artifacts = [a for a in manifest.get('artifacts') or [] if not a.get('excluded')]
+            runs = [r for r in manifest.get('runs') or [] if not r.get('excluded')]
+            cited_by_checkpoint = {ref for c in checkpoints for ref in (c.get('evidence_ids') or [])}
+            cited_by_run = {ref for r in runs for ref in (r.get('input_ids') or []) + (r.get('output_ids') or [])}
+            cited_by_artifact = {ref for a in artifacts for ref in (a.get('input_ids') or [])}
+
+            # A claim that rests on nothing is the shortest path from "we observed" to "we
+            # believe". `validate` lets an observation stand alone; an audit should say so.
+            for c in checkpoints:
+                if c['kind'] in ('observation', 'conclusion', 'conditional') and not (c.get('evidence_ids') or []):
+                    note('warning', 'claim_without_evidence', eid,
+                         f"{c['kind']} {c['id']} ({(c.get('title') or c['text'][:40]).strip()}) cites no "
+                         'artifact or run; nothing in the record supports it')
+
+            used_scripts = {r['script_id'] for r in runs if r.get('script_id')}
+            for a in artifacts:
+                if a['role'] == 'script' and a['id'] not in used_scripts:
+                    note('warning', 'script_never_executed', eid,
+                         f"script {a['id']} ({a['location']}) is registered but no run declares it")
+                if a['role'] in ('raw', 'input') and a['id'] not in (cited_by_checkpoint | cited_by_run | cited_by_artifact):
+                    note('warning', 'evidence_never_used', eid,
+                         f"{a['role']} {a['id']} ({a['location']}) is registered but nothing consumes it")
+                if a['role'] == 'figure' and a['id'] not in cited_by_checkpoint:
+                    note('info', 'figure_not_cited', eid,
+                         f"figure {a['id']} is not cited by any checkpoint, so the report has no in-text pointer to it")
+
+            delivered = [r for r in manifest.get('reports') or [] if r.get('render_state') == 'success']
+            if manifest.get('execution_status') == 'success' and not delivered:
+                note('error', 'success_without_report', eid,
+                     'execution_status is success but no report rendered'); 
+            if manifest.get('execution_status') == 'wip' and delivered:
+                note('info', 'report_while_wip', eid,
+                     'a report was rendered but the record is still wip')
+
+            # Numbers are the part a reviewer cannot re-derive by reading prose.
+            quantities = manifest.get('quantities') or []
+            if quantities:
+                try:
+                    import units as _units
+                    for issue in _units.check_all(quantities):
+                        if issue['code'] in BLOCKING_UNIT_CODES:
+                            note('error', 'quantity_uninterpretable', eid, issue['text'])
+                except Exception as error:      # pragma: no cover - defensive
+                    note('warning', 'unit_check_unavailable', eid, f'unit check unavailable: {error}')
+            if quantities and not any(a['role'] in ('table', 'artifact') for a in artifacts) and not any(
+                    a['role'] == 'derived' for a in artifacts):
+                note('info', 'quantities_without_table', eid,
+                     f'{len(quantities)} quantities recorded but no table/derived artifact carries the raw data')
+
+            if not (manifest.get('reports') or []):
+                note('info', 'never_finalized', eid, 'no finalize attempt recorded')
+
+        if include_knowledge:
+            knowledge_path = self.workspace / 'levin_knowledge'
+            if (knowledge_path / 'topics').is_dir():
+                try:
+                    from knowledge import Knowledge, basis_of
+                    verdict = Knowledge(self.workspace).validate()
+                    for message in verdict['errors']:
+                        note('error', 'knowledge_invalid', 'levin_knowledge', message)
+                    for message in verdict['warnings']:
+                        note('warning', 'knowledge_warning', 'levin_knowledge', message)
+                    index = Knowledge(self.workspace).load()
+                    for entry in index['entries']:
+                        if entry.get('retired'):
+                            continue
+                        if basis_of(entry) == 'external':
+                            note('info', 'knowledge_prior_only', 'levin_knowledge',
+                                 f"{entry['id']} rests only on external evidence; it is a prior, not a "
+                                 'result of this workspace')
+                        for item in entry['evidence']:
+                            if item.get('source') == 'record' and item['experiment_id'] not in records:
+                                note('error', 'knowledge_orphan_evidence', 'levin_knowledge',
+                                     f"{entry['id']} cites {item['experiment_id']}, which this workspace no longer holds")
+                except Exception as error:
+                    note('warning', 'knowledge_unreadable', 'levin_knowledge', f'knowledge base cannot be audited: {error}')
+
+        order = {'error': 0, 'warning': 1, 'info': 2}
+        findings.sort(key=lambda f: (order[f['severity']], f['code'], f['subject']))
+        counts = {severity: sum(1 for f in findings if f['severity'] == severity)
+                  for severity in ('error', 'warning', 'info')}
+        return {'ok': True, 'records_audited': len(records), 'findings': findings,
+                'counts': counts, 'clean': not findings,
+                'by_code': {code: sum(1 for f in findings if f['code'] == code)
+                            for code in sorted({f['code'] for f in findings})},
+                'note': 'Deterministic checks only. Whether a conclusion follows from its evidence '
+                        'is judgement: hand this report to an independent reviewer.'}
+
     def index(self,query='',limit=100,offset=0,include_summary=False):
         rows=[]; errors=[]
         paths=sorted((self.root/'experiments').glob('exp-*/manifest.json'))

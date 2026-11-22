@@ -34,6 +34,37 @@ recorded under `0.11.9`, which is the release that shipped it.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-20
+
+Three roles, deliberately separated by what each can be trusted to judge. The agent that produced a
+record cannot credibly audit or review it, so only the mechanical part became code.
+
+### Added
+- Records:
+  - `research_record_audit` — a deterministic post-hoc audit across every record and the knowledge
+    base: claims (`observation`/`conclusion`/`conditional`) that cite no evidence, scripts never
+    executed by any run, raw/input evidence nothing consumes, figures with no in-text pointer,
+    `success` with no rendered report, quantities that fail the blocking unit checks, and knowledge
+    entries whose cited experiment is gone. Findings carry `severity` (error/warning/info) and
+    `code`, and are sorted so the report is diffable between runs.
+  - its own return says what it is not: whether a conclusion *follows* from its evidence is
+    judgement, and belongs to a separate reviewer.
+- Skill:
+  - `levin-record-reviewer` — an independent reviewer's brief: four questions per claim (which
+    evidence, does its scale cover the claim's strength, is there a competing explanation, when does
+    it stop holding), severity grading, and a hard rule to report only and change nothing.
+  - `levin-research-advisor` — an independent advisor's brief: current state as three lists
+    (established / needs strengthening / refuted), the bottleneck question, and 1–3 next steps that
+    each carry hypothesis, action, falsifiable criterion and cost, plus what to stop investing in.
+
+### Changed
+- Skill:
+  - the runtime skill names all three roles and states that `research_record_audit` runs before a
+    review, so a reviewer never re-derives what code already checked.
+
+### Tests
+- 226 cases (222 + four for the auditor, including one that pins its own limits).
+
 ## [0.16.0] - 2026-11-20
 
 A record could say which software and which host produced it, but not which **skills** did. Skills get

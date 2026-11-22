@@ -1156,6 +1156,46 @@ class RecordModelTests(unittest.TestCase):
                             skills=[{'name': 'x', 'scope': 'wherever'}], request_id='sk4')
         self.assertIn('scope', str(caught.exception).lower())
 
+    def test_audit_finds_claims_that_rest_on_nothing(self):
+        # `validate` lets a lone observation stand; an audit must say so, because a claim
+        # with no evidence is the shortest path from "we observed" to "we believe".
+        self.n.checkpoint(self.eid, 'a', 'observation', '界面 pLDDT 在链界下降到 62，两 decoy 一致', title='无证据观察')
+        report = self.n.audit(include_knowledge=False)
+        codes = report['by_code']
+        self.assertEqual(codes.get('claim_without_evidence'), 1)
+        self.assertFalse(report['clean'])
+        self.assertEqual(report['counts']['error'], 0)
+
+    def test_audit_does_not_flag_evidence_that_is_actually_used(self):
+        script = self.n.register_artifact(self.eid, {'role': 'script', 'location': str(self.write('plot.py')),
+                                                     'description': 'plot'})['artifact_id']
+        data = self.n.register_artifact(self.eid, {'role': 'input', 'location': str(self.write('in.csv')),
+                                                   'description': 'input', 'source_origin': 'local_original'})['artifact_id']
+        self.n.register_run(self.eid, dict(backend='local', execution_status='success',
+                                          command='python plot.py', environment={'python': '3.11'},
+                                          script_id=script, input_ids=[data]))
+        self.n.checkpoint(self.eid, 'a', 'observation', '读数稳定', evidence_ids=[data])
+        report = self.n.audit(include_knowledge=False)
+        self.assertNotIn('script_never_executed', report['by_code'])
+        self.assertNotIn('evidence_never_used', report['by_code'])
+        self.assertNotIn('claim_without_evidence', report['by_code'])
+
+    def test_audit_flags_a_successful_record_with_no_report(self):
+        self.n.checkpoint(self.eid, 'a', 'method', 'Ran the analysis')
+        manifest = self.n._load(self.eid)
+        manifest['execution_status'] = 'success'
+        self.n._save(manifest)
+        report = self.n.audit(include_knowledge=False)
+        self.assertIn('success_without_report', report['by_code'])
+        self.assertEqual(report['counts']['error'], 1)
+
+    def test_audit_reports_that_it_is_not_a_judgement(self):
+        # The boundary matters: code checks consistency, a reviewer checks inference.
+        self.n.checkpoint(self.eid, 'a', 'method', 'Ran the analysis')
+        report = self.n.audit(include_knowledge=False)
+        self.assertIn('judgement', report['note'])
+        self.assertIn('independent reviewer', report['note'])
+
     def test_a_pause_stops_the_recorder_recording_itself(self):
         # Debugging the notebook tooling inside the same session used to write the debugging
         # process into the experiment, which then documented the recorder, not the science.

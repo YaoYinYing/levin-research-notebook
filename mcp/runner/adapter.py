@@ -48,6 +48,8 @@ def invoke(operation, arguments):
             return n.exclude(a['experiment_id'], a['agent_id'], a['targets'], a['reason'], a.get('restore',False))
         if operation=='prune_revisions':
             return n.prune_revisions(a['experiment_id'], a.get('keep',20), a.get('dry_run',False))
+        if operation=='audit':
+            return n.audit(a.get('include_knowledge',True))
         if operation=='index':
             rows,errors=n.index(**a); return {'ok':True,'experiments':rows,'errors':errors,'count':len(rows)}
         raise NotebookError('Unknown operation')
@@ -63,6 +65,7 @@ def research_record_register_artifact(context,arguments): return invoke('registe
 def research_record_register_run(context,arguments): return invoke('register_run',arguments)
 def research_record_validate(context,arguments): return invoke('validate',arguments)
 def research_record_finalize(context,arguments): return invoke('finalize',arguments)
+def research_record_audit(context,arguments): return invoke('audit',arguments)
 def research_record_index(context,arguments): return invoke('index',arguments)
 def research_record_prune_reports(context,arguments): return invoke('prune_reports',arguments)
 def research_record_prune_revisions(context,arguments): return invoke('prune_revisions',arguments)

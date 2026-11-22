@@ -50,6 +50,20 @@ here) or `external` (literature), and the two are never mixed in the brief. A le
 epistemic: it must also have been paid for by a local failure, and `research_knowledge_candidates` lists
 the failures you have not promoted yet.
 
+## Three roles you are not
+
+This skill drives the work. Three other roles exist because the agent doing the work cannot
+credibly audit or review itself:
+
+| Role | What it does | Where it lives |
+|---|---|---|
+| **auditor** | deterministic checks only: checksums, cross-references, orphan evidence, success without a report | `research_record_audit` — run it, read it, never hand-wave it |
+| **reviewer** | does this evidence actually support this claim | skill `levin-record-reviewer`, run as an independent worker |
+| **advisor** | what to do next, ordered by information per unit cost | skill `levin-research-advisor`, run as an independent worker |
+
+Run `research_record_audit` before asking for a review, and hand its report to the reviewer; a
+reviewer should never spend its attention re-deriving what code already checked.
+
 ## Invariants — these override convenience
 
 - Never invent a result, number, citation or figure. A conclusion needs evidence ids; a failure
